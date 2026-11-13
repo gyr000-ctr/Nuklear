@@ -13,6 +13,9 @@ nk_widget_text(struct nk_command_buffer *o, struct nk_rect b,
 {
     struct nk_rect label;
     float text_width;
+    const char *draw_string = string;
+    int draw_len = len;
+    nk_bool rtl = nk_false;
 
     NK_ASSERT(o);
     NK_ASSERT(t);
@@ -20,7 +23,15 @@ nk_widget_text(struct nk_command_buffer *o, struct nk_rect b,
 
     b.h = NK_MAX(b.h, 2 * t->padding.y);
 
-    text_width = f->width(f->userdata, f->height, (const char*)string, len);
+#ifdef NK_INCLUDE_BIDI
+    /* reorder mixed RTL/LTR paragraphs into visual order; falls back to
+     * the identity transform when bidi is disabled or unsupported */
+    if (nk_bidi_is_enabled()) {
+        draw_string = nk_bidi_visual(string, len, f, &draw_len, &rtl);
+    }
+#endif
+    text_width = f->width(f->userdata, f->height,
+        (const char*)draw_string, draw_len);
     text_width += (2.0f * t->padding.x);
 
     /* use top-left alignment by default */
@@ -29,7 +40,13 @@ nk_widget_text(struct nk_command_buffer *o, struct nk_rect b,
     if (!(a & (NK_TEXT_ALIGN_TOP | NK_TEXT_ALIGN_MIDDLE | NK_TEXT_ALIGN_BOTTOM)))
         a |= NK_TEXT_ALIGN_TOP;
 
-    /* align in x-axis */
+    /* align in x-axis. For RTL paragraphs logical LEFT/RIGHT alignment is
+     * mirrored so the text visually starts at the right edge, while the
+     * unaligned default keeps its original position. */
+    if (rtl && (a & NK_TEXT_ALIGN_LEFT))
+        a = (nk_flags)((a & ~NK_TEXT_ALIGN_LEFT) | NK_TEXT_ALIGN_RIGHT);
+    else if (rtl && (a & NK_TEXT_ALIGN_RIGHT))
+        a = (nk_flags)((a & ~NK_TEXT_ALIGN_RIGHT) | NK_TEXT_ALIGN_LEFT);
     if (a & NK_TEXT_ALIGN_LEFT) {
         label.x = b.x + t->padding.x;
         label.w = NK_MAX(0, b.w - 2 * t->padding.x);
@@ -56,7 +73,8 @@ nk_widget_text(struct nk_command_buffer *o, struct nk_rect b,
         label.h = f->height;
     }
 
-    nk_draw_text(o, label, (const char*)string, len, f, t->background, t->text);
+    nk_draw_text(o, label, (const char*)draw_string, draw_len, f,
+        t->background, t->text);
 }
 NK_LIB void
 nk_widget_text_wrap(struct nk_command_buffer *o, struct nk_rect b,
@@ -87,6 +105,45 @@ nk_widget_text_wrap(struct nk_command_buffer *o, struct nk_rect b,
     line.y = b.y + t->padding.y;
     line.w = b.w - 2 * t->padding.x;
     line.h = 2 * t->padding.y + f->height;
+
+#ifdef NK_INCLUDE_BIDI
+    if (nk_bidi_is_enabled()) {
+        /* bidi-aware word wrap: break into byte ranges first, then
+         * reorder each line independently into visual order. The text is
+         * streamed in chunks so arbitrarily long content never depends on
+         * a fixed stack buffer; clipping by height matches the LTR path. */
+        struct nk_bidi_wrap_line wraps[32];
+        int consumed = 0;
+        for (;;) {
+            int nlines;
+            int li;
+            if (consumed >= len || line.y + line.h >= (b.y + b.h))
+                break;
+            nlines = nk_bidi_wrap_lines(string + consumed, len - consumed,
+                line.w, f, wraps, NK_LEN(wraps));
+            if (nlines <= 0) break;
+            for (li = 0; li < nlines; ++li) {
+                const char *lp;
+                int llen;
+                nk_bool rtl;
+                if (line.y + line.h >= (b.y + b.h)) break;
+                lp = string + consumed + wraps[li].byte_offset;
+                llen = wraps[li].byte_length;
+                /* strip the line break itself from drawing */
+                if (llen > 0 && lp[llen - 1] == '\n') llen--;
+                if (llen > 0)
+                    lp = nk_bidi_visual(lp, llen, f, &llen, &rtl);
+                if (llen > 0)
+                    nk_widget_text(o, line, lp, llen, &text,
+                        NK_TEXT_LEFT, f);
+                line.y += f->height + 2 * t->padding.y;
+            }
+            consumed += wraps[nlines - 1].byte_offset +
+                        wraps[nlines - 1].byte_length;
+        }
+        return;
+    }
+#endif
 
     fitting = nk_text_clamp(f, string, len, line.w, &glyphs, &width, seperator,NK_LEN(seperator));
     while (done < len) {

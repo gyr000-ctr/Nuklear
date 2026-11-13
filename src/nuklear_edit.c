@@ -97,6 +97,48 @@ nk_edit_draw_text(struct nk_command_buffer *out,
     foreground = nk_rgb_factor(foreground, style->color_factor);
     background = nk_rgb_factor(background, style->color_factor);
 
+#ifdef NK_INCLUDE_BIDI
+    if (nk_bidi_is_enabled()) {
+        /* split into lines, resolve bidi per line and draw in visual
+         * order. Streamed in chunks so an edit buffer with many lines
+         * never depends on a fixed stack-sized array. */
+        struct nk_bidi_wrap_line wraps[32];
+        int consumed = 0;
+        int first_line = 1;
+        while (consumed < byte_len) {
+            int nlines = nk_bidi_wrap_lines(text + consumed,
+                byte_len - consumed, 0, font, wraps, NK_LEN(wraps));
+            int li2;
+            if (nlines <= 0) break;
+            for (li2 = 0; li2 < nlines; ++li2) {
+                struct nk_rect label;
+                const char *lp = text + consumed +
+                    wraps[li2].byte_offset;
+                int llen = wraps[li2].byte_length;
+                nk_bool rtl2;
+                if (llen > 0 && lp[llen - 1] == '\n') llen--;
+                if (llen <= 0) { line_offset += row_height; continue; }
+                lp = nk_bidi_visual(lp, llen, font, &llen, &rtl2);
+                label.y = pos_y + line_offset;
+                label.h = row_height;
+                label.w = font->width(font->userdata, font->height,
+                    lp, llen);
+                label.x = pos_x;
+                if (first_line) label.x += x_offset;
+                if (is_selected)
+                    nk_fill_rect(out, label, 0, background);
+                nk_widget_text(out, label, lp, llen, &txt,
+                    NK_TEXT_LEFT, font);
+                line_offset += row_height;
+                first_line = 0;
+            }
+            consumed += wraps[nlines - 1].byte_offset +
+                        wraps[nlines - 1].byte_length;
+        }
+        return;
+    }
+#endif
+
     glyph_len = nk_utf_decode(text+text_len, &unicode, byte_len-text_len);
     if (!glyph_len) return;
     while ((text_len < byte_len) && glyph_len)
@@ -376,6 +418,75 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
             int glyphs = 0;
             int row_begin = 0;
 
+#ifdef NK_INCLUDE_BIDI
+            if (nk_bidi_is_enabled()) {
+                /* bidi-aware mapping of logical caret/selection indices to
+                 * visual x positions and row offsets. Bidi line breaks use
+                 * the same newline rules as the editor (no width wrapping
+                 * inside edit widgets). */
+                int total = nk_bidi_line_count(text, len, font, 0);
+                int row;
+                float max_w = 0;
+                if (total <= 0) total = 1;
+                for (row = 0; row < total; ++row) {
+                    int first = 0, cnt = 0;
+                    float lw = 0;
+                    float ry = (float)row * row_height;
+                    if (!nk_bidi_line_info(text, len, row, &first, &cnt,
+                            &lw, font, 0))
+                        break;
+                    max_w = NK_MAX(max_w, lw);
+                    if (edit->cursor >= first &&
+                        edit->cursor <= first + cnt) {
+                        cursor_pos.x = nk_bidi_caret_x(text, len,
+                            edit->cursor, 0, font, 0);
+                        cursor_pos.y = ry;
+                        if (edit->cursor < edit->string.len)
+                            cursor_ptr = nk_str_at_const(&edit->string,
+                                edit->cursor, &unicode, &glyph_len);
+                    }
+                    if (edit->select_start != edit->select_end &&
+                        selection_begin >= first &&
+                        selection_begin <= first + cnt) {
+                        selection_offset_start.x = nk_bidi_caret_x(text, len,
+                            selection_begin, 0, font, 0);
+                        selection_offset_start.y = ry;
+                        select_begin_ptr = nk_str_at_const(&edit->string,
+                            selection_begin, &unicode, &glyph_len);
+                    }
+                    if (edit->select_start != edit->select_end &&
+                        selection_end >= first &&
+                        selection_end <= first + cnt) {
+                        selection_offset_end.x = nk_bidi_caret_x(text, len,
+                            selection_end, 0, font, 0);
+                        selection_offset_end.y = ry;
+                        select_end_ptr = nk_str_at_const(&edit->string,
+                            selection_end, &unicode, &glyph_len);
+                    }
+                }
+                text_size.x = max_w;
+                text_size.y = (float)total * row_height;
+
+                /* caret at end of buffer */
+                if (!cursor_ptr && edit->cursor == edit->string.len) {
+                    cursor_pos.x = nk_bidi_caret_x(text, len,
+                        edit->cursor, 0, font, 0);
+                    cursor_pos.y = text_size.y - row_height;
+                    if (edit->string.len > 0)
+                        cursor_ptr = text + len;
+                }
+                if (!select_end_ptr &&
+                    edit->select_start != edit->select_end &&
+                    selection_end == edit->string.len) {
+                    selection_offset_end.x = nk_bidi_caret_x(text, len,
+                        selection_end, 0, font, 0);
+                    selection_offset_end.y = text_size.y - row_height;
+                    select_end_ptr = text + len;
+                }
+                goto bidi_positions_done;
+            }
+#endif
+
             glyph_len = nk_utf_decode(text, &unicode, len);
             glyph_width = font->width(font->userdata, font->height, text, glyph_len);
             line_width = 0;
@@ -464,6 +575,10 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
                 cursor_pos.y = text_size.y - row_height;
             }
         }
+#ifdef NK_INCLUDE_BIDI
+bidi_positions_done:
+        ;
+#endif
         {
             /* scrollbar */
             if (cursor_follow)

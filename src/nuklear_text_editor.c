@@ -69,6 +69,39 @@ nk_textedit_locate_coord(struct nk_text_edit *edit, float x, float y,
     float base_y = 0, prev_x;
     int i=0, k;
 
+#ifdef NK_INCLUDE_BIDI
+    if (nk_bidi_is_enabled()) {
+        /* map visual (x, y) back to a logical rune index per line */
+        const char *text = nk_str_get_const(&edit->string);
+        int byte_len = nk_str_len_char(&edit->string);
+        int total = nk_bidi_line_count(text, byte_len, font, 0);
+        int line;
+        if (total <= 0)
+            return n;
+        if (y < 0)
+            return 0;
+        line = (int)(y / row_height);
+        if (line >= total)
+            return n;
+        {
+            int first = 0, cnt = 0;
+            int hit;
+            float lw = 0;
+            if (!nk_bidi_line_info(text, byte_len, line, &first, &cnt,
+                    &lw, font, 0))
+                return n;
+            hit = nk_bidi_hit_test(text, byte_len, line, x, font, 0);
+            if (hit < 0)
+                return first + cnt;
+            /* newline caret belongs to the line it terminates */
+            if (hit == first + cnt && hit < n &&
+                nk_str_rune_at(&edit->string, hit) == '\n')
+                return hit;
+            return hit;
+        }
+    }
+#endif
+
     r.x0 = r.x1 = 0;
     r.ymin = r.ymax = 0;
     r.num_chars = 0;
@@ -152,6 +185,66 @@ nk_textedit_find_charpos(struct nk_text_find *find, struct nk_text_edit *state,
     int prev_start = 0;
     int z = state->string.len;
     int i=0, first;
+
+#ifdef NK_INCLUDE_BIDI
+    if (nk_bidi_is_enabled()) {
+        const char *text = nk_str_get_const(&state->string);
+        int byte_len = nk_str_len_char(&state->string);
+        int total = nk_bidi_line_count(text, byte_len, font, 0);
+        int row;
+        nk_zero_struct(r);
+        if (total <= 0) total = 1;
+        if (n == z) {
+            int last = total - 1;
+            if (single_line) {
+                find->first_char = 0;
+                find->length = z;
+            } else {
+                int first = 0, cnt = 0;
+                nk_bidi_line_info(text, byte_len, last, &first, &cnt, 0,
+                    font, 0);
+                find->first_char = first;
+                find->length = cnt;
+                prev_start = 0;
+                if (last > 0) {
+                    int pf = 0, pc = 0;
+                    nk_bidi_line_info(text, byte_len, last - 1, &pf, &pc,
+                        0, font, 0);
+                    prev_start = pf;
+                }
+            }
+            find->x = nk_bidi_caret_x(text, byte_len, z, 0, font, 0);
+            find->y = (float)last * row_height;
+            find->height = (int)row_height;
+            find->prev_first = prev_start;
+            return;
+        }
+        find->y = 0;
+        for (row = 0; row < total; ++row) {
+            int first = 0, cnt = 0;
+            float lw = 0;
+            nk_bidi_line_info(text, byte_len, row, &first, &cnt, &lw,
+                font, 0);
+            r.x0 = 0; r.x1 = lw;
+            r.ymin = 0; r.ymax = row_height;
+            r.baseline_y_delta = row_height;
+            r.num_chars = cnt + 1; /* include terminating newline */
+            if (n < first + cnt + 1) break;
+            prev_start = first;
+            find->y = (float)row * row_height;
+        }
+        {
+            int f0 = 0, c0 = 0;
+            nk_bidi_line_info(text, byte_len, row, &f0, &c0, 0, font, 0);
+            find->first_char = f0;
+        }
+        find->length = r.num_chars;
+        find->height = r.ymax - r.ymin;
+        find->prev_first = prev_start;
+        find->x = nk_bidi_caret_x(text, byte_len, n, 0, font, 0);
+        return;
+    }
+#endif
 
     nk_zero_struct(r);
     if (n == z) {
@@ -459,9 +552,18 @@ retry:
         if (shift_mod) {
             nk_textedit_clamp(state);
             nk_textedit_prep_selection_at_cursor(state);
-            /* move selection left */
-            if (state->select_end > 0)
-                --state->select_end;
+            /* move selection left (visually when bidi is active) */
+            if (state->select_end > 0) {
+#ifdef NK_INCLUDE_BIDI
+                if (nk_bidi_is_enabled()) {
+                    const char *t = nk_str_get_const(&state->string);
+                    int l = nk_str_len_char(&state->string);
+                    state->select_end = nk_bidi_visual_neighbor(t, l,
+                        state->select_end, -1, font, 0);
+                } else
+#endif
+                    --state->select_end;
+            }
             state->cursor = state->select_end;
             state->has_preferred_x = 0;
         } else {
@@ -469,15 +571,34 @@ retry:
              * move cursor to start of selection */
             if (NK_TEXT_HAS_SELECTION(state))
                 nk_textedit_move_to_first(state);
-            else if (state->cursor > 0)
-               --state->cursor;
+            else if (state->cursor > 0) {
+#ifdef NK_INCLUDE_BIDI
+                if (nk_bidi_is_enabled()) {
+                    const char *t = nk_str_get_const(&state->string);
+                    int l = nk_str_len_char(&state->string);
+                    state->cursor = nk_bidi_visual_neighbor(t, l,
+                        state->cursor, -1, font, 0);
+                } else
+#endif
+                   --state->cursor;
+            }
             state->has_preferred_x = 0;
         } break;
 
     case NK_KEY_RIGHT:
         if (shift_mod) {
             nk_textedit_prep_selection_at_cursor(state);
-            /* move selection right */
+            /* move selection right (visually when bidi is active).
+             * No monotonicity guard: in RTL the visual-right neighbor may
+             * have a smaller logical index */
+#ifdef NK_INCLUDE_BIDI
+            if (nk_bidi_is_enabled()) {
+                const char *t = nk_str_get_const(&state->string);
+                int l = nk_str_len_char(&state->string);
+                state->select_end = nk_bidi_visual_neighbor(t, l,
+                    state->select_end, 1, font, 0);
+            } else
+#endif
             ++state->select_end;
             nk_textedit_clamp(state);
             state->cursor = state->select_end;
@@ -487,7 +608,17 @@ retry:
              * move cursor to end of selection */
             if (NK_TEXT_HAS_SELECTION(state))
                 nk_textedit_move_to_last(state);
-            else ++state->cursor;
+            else {
+#ifdef NK_INCLUDE_BIDI
+                if (nk_bidi_is_enabled()) {
+                    const char *t = nk_str_get_const(&state->string);
+                    int l = nk_str_len_char(&state->string);
+                    state->cursor = nk_bidi_visual_neighbor(t, l,
+                        state->cursor, 1, font, 0);
+                } else
+#endif
+                ++state->cursor;
+            }
             nk_textedit_clamp(state);
             state->has_preferred_x = 0;
         } break;

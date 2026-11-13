@@ -4337,6 +4337,113 @@ NK_API int nk_str_len_char(const struct nk_str*);
 
 /* ===============================================================
  *
+ *                      BIDIRECTIONAL TEXT
+ *
+ * ===============================================================*/
+/**
+ * \page BidirectionalText
+ * Optional Unicode bidirectional text support (UAX #9) for Arabic,
+ * Hebrew and mixed RTL/LTR content. It is compiled in only when
+ * `NK_INCLUDE_BIDI` is defined and stays dormant until activated at
+ * runtime through `nk_bidi_enable()`. While disabled, layout and
+ * rendering output are identical to the LTR-only implementation.
+ *
+ * The module resolves paragraph and run direction (P2/P3), explicit
+ * embedding/override/isolate controls (X rules), weak types including
+ * European/Arabic numbers (W rules), simplified bracket pairs (N0),
+ * neutral types (N rules), implicit levels (I rules), visual
+ * reordering (L2) and mirrored punctuation (L4). Caret positions,
+ * hit-testing, selection rectangles and scrolling all map between
+ * logical indices and visual order.
+ *
+ * Layout results are cached per text pointer, byte length, width and
+ * font height. Caches only grow when a longer text is encountered, so
+ * steady-state per-frame layout allocates no temporary heap memory
+ * proportional to text length. On any failure (allocation failure,
+ * malformed UTF-8, unsupported nesting, overlong input) every entry
+ * point degrades gracefully to plain LTR behavior. Requires
+ * NK_INCLUDE_DEFAULT_ALLOCATOR for the cache storage.
+ */
+#ifdef NK_INCLUDE_BIDI
+
+/** one glyph in visual order, as produced by nk_bidi_visual_segments() */
+struct nk_bidi_visual_segment {
+    int byte_offset;    /*!< byte offset of the rune in the logical UTF-8 text */
+    nk_rune original;   /*!< logical codepoint */
+    nk_rune mapped;     /*!< codepoint after L4 mirroring (may equal original) */
+    float x;            /*!< visual x position inside the line */
+    float width;        /*!< glyph advance width */
+    nk_bool rtl;        /*!< the rune belongs to a right-to-left run */
+};
+
+/** one wrapped line produced by nk_bidi_wrap_lines() */
+struct nk_bidi_wrap_line {
+    int byte_offset;    /*!< line start as byte offset into the input text */
+    int byte_length;    /*!< line length in bytes (excluding line breaks) */
+    float line_width;
+    nk_bool rtl;        /*!< paragraph base direction of the line */
+};
+
+/** enable/disable bidi layout globally; off by default */
+NK_API void nk_bidi_enable(nk_bool enabled);
+NK_API nk_bool nk_bidi_is_enabled(void);
+
+/** paragraph base direction: nk_true for RTL, nk_false for LTR/default */
+NK_API nk_bool nk_bidi_text_direction(const char *text, int byte_len);
+NK_API nk_bool nk_bidi_line_direction(const char *text, int byte_len,
+    int line_index);
+
+/**
+ * Reorder a whole paragraph into visual-order UTF-8 stored in an internal
+ * cache. Returns either the transformed buffer or the original pointer on
+ * failure / when bidi is disabled. Mirrored punctuation is substituted
+ * according to L4. The returned pointer stays valid until the next call. */
+NK_API const char *nk_bidi_visual(const char *text, int byte_len,
+    const struct nk_user_font *font, int *out_len, nk_bool *out_rtl);
+
+/** word-wrap a paragraph into byte ranges; returns the number of lines */
+NK_API int nk_bidi_wrap_lines(const char *text, int byte_len, float width,
+    const struct nk_user_font *font, struct nk_bidi_wrap_line *out,
+    int max_lines);
+
+/** number of laid-out lines for a paragraph (width 0 = break at newlines) */
+NK_API int nk_bidi_line_count(const char *text, int byte_len,
+    const struct nk_user_font *font, float width);
+
+/** query one laid-out line: logical rune range and visual width */
+NK_API nk_bool nk_bidi_line_info(const char *text, int byte_len,
+    int line_index, int *first_rune, int *rune_count, float *line_width,
+    const struct nk_user_font *font, float width);
+
+/** map a visual x position inside a line back to a logical rune index */
+NK_API int nk_bidi_hit_test(const char *text, int byte_len, int line_index,
+    float x, const struct nk_user_font *font, float width);
+
+/** map a logical rune index to its visual x position and line index */
+NK_API float nk_bidi_caret_x(const char *text, int byte_len,
+    int logical_index, int *line_index_out,
+    const struct nk_user_font *font, float width);
+
+/** logical neighbor in visual direction: direction < 0 = left, > 0 = right */
+NK_API int nk_bidi_visual_neighbor(const char *text, int byte_len,
+    int logical_index, int direction,
+    const struct nk_user_font *font, float width);
+
+/** visual extents of a logical selection range on one line */
+NK_API void nk_bidi_selection_rects(const char *text, int byte_len,
+    int line_index, int sel_begin, int sel_end,
+    const struct nk_user_font *font, float width,
+    float *x0_out, float *x1_out);
+
+/** enumerate the visual glyphs of a line (for custom rendering) */
+NK_API int nk_bidi_visual_segments(const char *text, int byte_len,
+    int line_index, const struct nk_user_font *font, float width,
+    struct nk_bidi_visual_segment *segments, int max_segments);
+
+#endif /* NK_INCLUDE_BIDI */
+
+/* ===============================================================
+ *
  *                      TEXT EDITOR
  *
  * ===============================================================*/
