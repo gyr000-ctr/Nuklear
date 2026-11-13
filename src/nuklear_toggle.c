@@ -223,6 +223,11 @@ nk_check_text(struct nk_context *ctx, const char *text, int len, nk_bool active)
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
     nk_do_toggle(&ctx->last_widget_state, &win->buffer, bounds, &active,
         text, len, NK_TOGGLE_CHECK, &style->checkbox, in, style->font, NK_WIDGET_LEFT, NK_TEXT_LEFT);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_TOGGLE_BUTTON, text, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (active ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return active;
 }
 NK_API nk_bool
@@ -362,6 +367,11 @@ nk_option_text(struct nk_context *ctx, const char *text, int len, nk_bool is_act
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
     nk_do_toggle(&ctx->last_widget_state, &win->buffer, bounds, &is_active,
         text, len, NK_TOGGLE_OPTION, &style->option, in, style->font, NK_WIDGET_LEFT, NK_TEXT_LEFT);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_RADIO_BUTTON, text, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (is_active ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return is_active;
 }
 NK_API nk_bool

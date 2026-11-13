@@ -69,6 +69,10 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
     struct nk_rect header;
     const struct nk_style_item *background;
     struct nk_text text;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    int a11y_parent = -1;
+    nk_bool a11y_visible = nk_false;
+#endif
 
     NK_ASSERT(ctx);
     NK_ASSERT(selected);
@@ -82,6 +86,12 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
     s = nk_widget(&header, ctx);
     if (s == NK_WIDGET_INVALID)
         return 0;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    /* capture the header scope/visibility before the popup changes the
+     * current window and clip rectangle */
+    a11y_parent = nk_a11y_current_scope_idx(ctx);
+    a11y_visible = nk_a11y_rect_is_visible(ctx, header);
+#endif
 
     in = (win->layout->flags & NK_WINDOW_ROM || s == NK_WIDGET_DISABLED || s == NK_WIDGET_ROM)? 0: &ctx->input;
     if (nk_button_behavior(&ctx->last_widget_state, header, in, NK_BUTTON_DEFAULT))
@@ -162,7 +172,18 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
             nk_draw_button_symbol(&win->buffer, &button, &content, ctx->last_widget_state,
                 &ctx->style.combo.button, sym, style->font);
     }
-    return nk_combo_begin(ctx, win, size, is_clicked, header);
+    {
+        nk_bool opened = nk_combo_begin(ctx, win, size, is_clicked, header);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+        /* emit with the pre-popup scope and visibility so the header is
+         * recorded as a child of its own window even while open */
+        nk_a11y_emit_in(ctx, a11y_parent, a11y_visible,
+            NK_A11Y_ROLE_COMBO_BOX, selected, len, selected, len,
+            header, (s == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+            (opened ? NK_A11Y_STATE_EXPANDED : NK_A11Y_STATE_COLLAPSED));
+#endif
+        return opened;
+    }
 }
 NK_API nk_bool
 nk_combo_begin_label(struct nk_context *ctx, const char *selected, struct nk_vec2 size)

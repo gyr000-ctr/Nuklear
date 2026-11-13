@@ -62,6 +62,8 @@ nk_list_view_begin(struct nk_context *ctx, struct nk_list_view *view,
     view->count = NK_MIN(view->count, row_count - view->begin);
     view->end = view->begin + view->count;
     view->ctx = ctx;
+    /* the list view is backed by a group, which already records a GROUP
+     * scope containing all visible row widgets; no extra push needed */
     return result;
 }
 NK_API void

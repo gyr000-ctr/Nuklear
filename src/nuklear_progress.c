@@ -147,6 +147,16 @@ nk_progress(struct nk_context *ctx, nk_size *cur, nk_size max, nk_bool is_modify
     old_value = *cur;
     *cur = nk_do_progress(&ctx->last_widget_state, &win->buffer, bounds,
             *cur, max, is_modifyable, &style->progress, in);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen;
+        nk_itoa(vbuf, (int)*cur);
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_PROGRESS_BAR, "progress", 8,
+            vbuf, vlen, bounds,
+            state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+    }
+#endif
     return (*cur != old_value);
 }
 NK_API nk_size

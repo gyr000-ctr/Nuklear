@@ -110,6 +110,14 @@ nk_tree_state_base(struct nk_context *ctx, enum nk_tree_type type,
     nk_widget_text(out, label, title, nk_strlen(title), &text,
         NK_TEXT_LEFT, style->font);}
 
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_TREE_ITEM, title,
+        (int)nk_strlen(title), 0, 0, header,
+        (widget_state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (*state == NK_MAXIMIZED ? NK_A11Y_STATE_EXPANDED :
+         NK_A11Y_STATE_COLLAPSED));
+#endif
+
     /* increase x-axis cursor widget position pointer */
     if (*state == NK_MAXIMIZED) {
         layout->at_x = header.x + (float)*layout->offset_x + style->tab.indent;

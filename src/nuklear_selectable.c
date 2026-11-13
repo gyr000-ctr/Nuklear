@@ -222,6 +222,11 @@ nk_selectable_text(struct nk_context *ctx, const char *str, int len,
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LIST_ITEM, str, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (*value ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return nk_do_selectable(&ctx->last_widget_state, &win->buffer, bounds,
                 str, len, align, value, &style->selectable, in, style->font);
 }

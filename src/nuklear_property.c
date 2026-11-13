@@ -409,6 +409,21 @@ nk_property(struct nk_context *ctx, const char *name, struct nk_property_variant
         variant, inc_per_pixel, buffer, len, state, cursor, select_begin,
         select_end, &style->property, filter, in, style->font, &ctx->text_edit,
         ctx->button_behavior);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen = 0;
+        nk_flags aflags = (s == NK_WIDGET_DISABLED) ? NK_A11Y_STATE_DISABLED : 0;
+        if (filter == NK_FILTER_INT)
+            nk_itoa(vbuf, variant->value.i);
+        else if (variant->kind == NK_PROPERTY_FLOAT)
+            nk_dtoa(vbuf, (double)variant->value.f);
+        else
+            nk_dtoa(vbuf, variant->value.d);
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_SPIN_BUTTON, name,
+            (int)nk_strlen(name), vbuf, vlen, bounds, aflags);
+    }
+#endif
 
     if (in && *state != NK_PROPERTY_DEFAULT && !hot) {
         /* another property was active */

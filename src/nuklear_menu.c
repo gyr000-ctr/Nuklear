@@ -129,6 +129,10 @@ nk_menu_begin_text(struct nk_context *ctx, const char *title, int len,
     state = nk_widget(&header, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || win->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_MENU_ITEM, title, len, 0, 0, header,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     if (nk_do_button_text(&ctx->last_widget_state, &win->buffer, header,
         title, len, align, NK_BUTTON_DEFAULT, &ctx->style.menu_button, in, ctx->style.font))
         is_clicked = nk_true;

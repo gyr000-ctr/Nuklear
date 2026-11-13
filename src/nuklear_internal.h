@@ -353,6 +353,30 @@ NK_LIB void nk_draw_property(struct nk_command_buffer *out, const struct nk_styl
 NK_LIB void nk_do_property(nk_flags *ws, struct nk_command_buffer *out, struct nk_rect property, const char *name, struct nk_property_variant *variant, float inc_per_pixel, char *buffer, int *len, int *state, int *cursor, int *select_begin, int *select_end, const struct nk_style_property *style, enum nk_property_filter filter, struct nk_input *in, const struct nk_user_font *font, struct nk_text_edit *text_edit, enum nk_button_behavior behavior);
 NK_LIB void nk_property(struct nk_context *ctx, const char *name, struct nk_property_variant *variant, float inc_per_pixel, const enum nk_property_filter filter);
 
+/* accessibility semantic layer instrumentation */
+#ifdef NK_INCLUDE_ACCESSIBILITY
+struct nk_a11y_runtime;
+NK_LIB void nk_a11y_begin_frame(struct nk_context *ctx);
+NK_LIB void nk_a11y_shutdown(struct nk_context *ctx);
+NK_LIB int  nk_a11y_emit(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, const char *value, int value_len,
+    struct nk_rect bounds, nk_flags state);
+NK_LIB int  nk_a11y_emit_in(struct nk_context *ctx, int parent, nk_bool visible,
+    enum nk_a11y_role role, const char *name, int name_len,
+    const char *value, int value_len, struct nk_rect bounds, nk_flags state);
+NK_LIB nk_bool nk_a11y_rect_is_visible(struct nk_context *ctx, struct nk_rect r);
+NK_LIB int  nk_a11y_current_scope_idx(const struct nk_context *ctx);
+NK_LIB void nk_a11y_scope_push(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, struct nk_rect bounds, nk_flags state);
+NK_LIB void nk_a11y_scope_pop(struct nk_context *ctx);
+NK_LIB void nk_a11y_note_popup(struct nk_context *ctx, nk_bool modal, nk_bool open);
+NK_LIB void nk_a11y_note_edit_focus(struct nk_context *ctx, int node_index);
+#else
+#define nk_a11y_begin_frame(ctx) ((void)0)
+#define nk_a11y_shutdown(ctx) ((void)0)
+#define nk_a11y_note_popup(ctx, modal, open) ((void)0)
+#endif
+
 #ifdef NK_INCLUDE_FONT_BAKING
 
 /**

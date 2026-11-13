@@ -291,6 +291,11 @@ nk_begin_titled(struct nk_context *ctx, const char *name, const char *title,
     ret = nk_panel_begin(ctx, title, NK_PANEL_WINDOW);
     win->layout->offset_x = &win->scrollbar.x;
     win->layout->offset_y = &win->scrollbar.y;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (ret)
+        nk_a11y_scope_push(ctx, NK_A11Y_ROLE_WINDOW, title,
+            (int)nk_strlen(title), win->bounds, 0);
+#endif
     return ret;
 }
 NK_API void
@@ -307,6 +312,10 @@ nk_end(struct nk_context *ctx)
         ctx->current = 0;
         return;
     }
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (layout->type == NK_PANEL_WINDOW)
+        nk_a11y_scope_pop(ctx);
+#endif
     nk_panel_end(ctx);
     nk_free_panel(ctx, ctx->current->layout);
     ctx->current = 0;

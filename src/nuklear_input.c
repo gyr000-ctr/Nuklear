@@ -25,6 +25,9 @@ nk_input_begin(struct nk_context *ctx)
     in->mouse.delta.y = 0;
     for (i = 0; i < NK_KEY_MAX; i++)
         in->keyboard.keys[i].clicked = 0;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_begin_frame(ctx);
+#endif
 }
 NK_API void
 nk_input_end(struct nk_context *ctx)

@@ -53,6 +53,10 @@ nk_group_scrolled_offset_begin(struct nk_context *ctx,
         if (f & NK_WINDOW_MINIMIZED)
             return NK_WINDOW_MINIMIZED;
     }
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_scope_push(ctx, NK_A11Y_ROLE_GROUP, title,
+        title ? (int)nk_strlen(title) : 0, panel.bounds, 0);
+#endif
     return 1;
 }
 NK_API void
@@ -78,6 +82,9 @@ nk_group_scrolled_end(struct nk_context *ctx)
     g = win->layout;
     NK_ASSERT(g->parent);
     parent = g->parent;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_scope_pop(ctx);
+#endif
 
     /* dummy window */
     nk_zero_struct(pan);

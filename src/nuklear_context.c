@@ -89,6 +89,10 @@ nk_free(struct nk_context *ctx)
 {
     NK_ASSERT(ctx);
     if (!ctx) return;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (ctx->a11y)
+        nk_a11y_shutdown(ctx);
+#endif
     nk_buffer_free(&ctx->memory);
     if (ctx->use_pool)
         nk_pool_free(&ctx->pool);

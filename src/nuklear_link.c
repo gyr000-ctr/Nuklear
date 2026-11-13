@@ -169,6 +169,10 @@ nk_link_text_styled(struct nk_context *ctx, const struct nk_style_link *style,
 
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LINK, title, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_link(&ctx->last_widget_state, &win->buffer, bounds,
                     title, len, align, style, in, ctx->style.font,
                     ctx->style.window.background);

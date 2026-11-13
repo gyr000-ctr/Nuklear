@@ -1,0 +1,27 @@
+{
+  "frame":2,
+  "node_count":18,
+  "focused_id":0,
+  "tree":
+  {"id":1,"role":"pane","name":"","value":null,"state":0,"state_name":"","bounds":[0.0,0.0,0.0,0.0],"parent":-1,"focus_order":-1,"children":[
+    {"id":1359970443,"role":"window","name":"Main","value":null,"state":128,"state_name":"focusable","bounds":[10.0,10.0,420.0,760.0],"parent":0,"focus_order":0,"children":[
+      {"id":3307756326,"role":"button","name":"OK","value":null,"state":128,"state_name":"focusable","bounds":[16.0,48.0,197.0,28.0],"parent":1,"focus_order":1,"children":[]},
+      {"id":366751998,"role":"button","name":"Cancel","value":null,"state":128,"state_name":"focusable","bounds":[217.0,48.0,197.0,28.0],"parent":1,"focus_order":2,"children":[]},
+      {"id":279825316,"role":"toggle_button","name":"Agree","value":null,"state":132,"state_name":"checked|focusable","bounds":[16.0,80.0,197.0,28.0],"parent":1,"focus_order":3,"children":[]},
+      {"id":1769736919,"role":"radio_button","name":"A","value":null,"state":132,"state_name":"checked|focusable","bounds":[217.0,80.0,197.0,28.0],"parent":1,"focus_order":4,"children":[]},
+      {"id":2955104922,"role":"radio_button","name":"B","value":null,"state":128,"state_name":"focusable","bounds":[16.0,112.0,197.0,28.0],"parent":1,"focus_order":5,"children":[]},
+      {"id":2500468232,"role":"text_input","name":"edit","value":"a\"b\\c\nd\u0001","state":128,"state_name":"focusable","bounds":[16.0,144.0,398.0,24.0],"parent":1,"focus_order":6,"children":[]},
+      {"id":505918217,"role":"slider","name":"slider","value":"30","state":128,"state_name":"focusable","bounds":[16.0,172.0,398.0,24.0],"parent":1,"focus_order":7,"children":[]},
+      {"id":594053959,"role":"progress_bar","name":"progress","value":"40","state":128,"state_name":"focusable","bounds":[16.0,200.0,398.0,24.0],"parent":1,"focus_order":8,"children":[]},
+      {"id":1748524040,"role":"button","name":"Disabled Button","value":null,"state":1,"state_name":"disabled","bounds":[16.0,228.0,398.0,26.0],"parent":1,"focus_order":-1,"children":[]},
+      {"id":476151936,"role":"group","name":"Items","value":null,"state":128,"state_name":"focusable","bounds":[16.0,258.0,398.0,150.0],"parent":1,"focus_order":9,"children":[
+        {"id":361021591,"role":"list_item","name":"Row 0","value":null,"state":128,"state_name":"focusable","bounds":[21.0,295.0,378.0,22.0],"parent":11,"focus_order":10,"children":[]},
+        {"id":3470620884,"role":"list_item","name":"Row 1","value":null,"state":128,"state_name":"focusable","bounds":[21.0,321.0,378.0,22.0],"parent":11,"focus_order":11,"children":[]},
+        {"id":2731757597,"role":"list_item","name":"Row 2","value":null,"state":128,"state_name":"focusable","bounds":[21.0,347.0,378.0,22.0],"parent":11,"focus_order":12,"children":[]},
+        {"id":1546389594,"role":"list_item","name":"Row 3","value":null,"state":128,"state_name":"focusable","bounds":[21.0,373.0,378.0,22.0],"parent":11,"focus_order":13,"children":[]}
+      ]},
+      {"id":3829336890,"role":"button","name":"Same","value":null,"state":128,"state_name":"focusable","bounds":[16.0,412.0,398.0,24.0],"parent":1,"focus_order":14,"children":[]},
+      {"id":879446603,"role":"button","name":"Same","value":null,"state":128,"state_name":"focusable","bounds":[16.0,440.0,398.0,24.0],"parent":1,"focus_order":15,"children":[]}
+    ]}
+  ]}
+}

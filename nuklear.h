@@ -219,6 +219,11 @@ extern "C" {
 #ifndef NK_SCROLLBAR_HIDING_TIMEOUT
   #define NK_SCROLLBAR_HIDING_TIMEOUT 4.0f
 #endif
+/* Accessibility semantic layer is included unless explicitly disabled
+ * with -DNK_INCLUDE_ACCESSIBILITY=0 / -DNK_INCLUDE_ACCESSIBILITY=n. */
+#if !defined(NK_INCLUDE_ACCESSIBILITY)
+  #define NK_INCLUDE_ACCESSIBILITY 1
+#endif
 /*
  * ==============================================================
  *
@@ -5984,6 +5989,188 @@ struct nk_pool {
     nk_size cap;
 };
 
+/*
+ * ==============================================================
+ *
+ *                          ACCESSIBILITY
+ *
+ * ===============================================================
+ * Optional semantic layer on top of the immediate mode widget API.
+ *
+ * Nuklear widgets only emit draw commands; they carry no role, name,
+ * value, state or focus information for screen readers or UI automation.
+ * When accessibility support is compiled in (NK_INCLUDE_ACCESSIBILITY,
+ * enabled by default) each instrumented widget additionally records a
+ * semantic node into a per-context tree that is rebuilt every frame.
+ *
+ * The layer is opt-in at runtime: nothing is recorded until
+ * nk_a11y_enable() is called and recording is zero-cost when disabled
+ * (a single branch on a flag). Rendering and input behaviour are never
+ * modified by the layer itself; the only runtime effect it can have is
+ * when the application explicitly requests an action such as setting
+ * focus or activating a node, which is delivered as synthetic input
+ * events through the regular nk_input_* path.
+ *
+ * Memory: nodes and label/value strings live in paged arenas owned by
+ * the context. At the start of each frame all arenas are reset in O(1)
+ * and their already allocated blocks are reused, so once the working
+ * set has grown to fit a frame no per-frame heap allocations happen and
+ * there is no per-widget temporary allocation.
+ */
+#ifndef NK_A11Y_NAME_MAX
+  #define NK_A11Y_NAME_MAX 128   /* longest recorded name/value, in bytes (truncated) */
+#endif
+#ifndef NK_A11Y_SCOPE_DEPTH
+  #define NK_A11Y_SCOPE_DEPTH 32 /* nested windows/groups/popups supported */
+#endif
+#ifndef NK_A11Y_NODE_PAGE
+  #define NK_A11Y_NODE_PAGE 256  /* nodes allocated per arena block */
+#endif
+#ifndef NK_A11Y_TEXT_PAGE
+  #define NK_A11Y_TEXT_PAGE 2048 /* string bytes allocated per arena block */
+#endif
+
+/** Semantic role of a node. Mirrors common platform accessibility roles. */
+enum nk_a11y_role {
+    NK_A11Y_ROLE_NONE = 0,
+    NK_A11Y_ROLE_WINDOW,       /**< top level or nested window */
+    NK_A11Y_ROLE_GROUP,        /**< named container: group, list view, tree body */
+    NK_A11Y_ROLE_PANE,         /**< unnamed structural container */
+    NK_A11Y_ROLE_BUTTON,
+    NK_A11Y_ROLE_TOGGLE_BUTTON,/**< check box / checkable button */
+    NK_A11Y_ROLE_RADIO_BUTTON,
+    NK_A11Y_ROLE_TEXT_INPUT,   /**< single or multi line edit */
+    NK_A11Y_ROLE_COMBO_BOX,
+    NK_A11Y_ROLE_LIST,
+    NK_A11Y_ROLE_LIST_ITEM,    /**< selectable row inside a list/combo/menu */
+    NK_A11Y_ROLE_MENU,
+    NK_A11Y_ROLE_MENU_ITEM,
+    NK_A11Y_ROLE_TREE_ITEM,    /**< collapsible tree header */
+    NK_A11Y_ROLE_SLIDER,
+    NK_A11Y_ROLE_PROGRESS_BAR,
+    NK_A11Y_ROLE_SPIN_BUTTON,  /**< numeric property */
+    NK_A11Y_ROLE_LABEL,        /**< static, non interactive text */
+    NK_A11Y_ROLE_LINK,
+    NK_A11Y_ROLE_COUNT
+};
+
+/** Bit flags describing the state of a node. */
+enum nk_a11y_state_flags {
+    NK_A11Y_STATE_DISABLED = NK_FLAG(0), /**< widget exists but cannot be operated */
+    NK_A11Y_STATE_FOCUSED  = NK_FLAG(1), /**< currently holds accessibility/keyboard focus */
+    NK_A11Y_STATE_CHECKED  = NK_FLAG(2), /**< toggle/radio/selectable is on */
+    NK_A11Y_STATE_EXPANDED = NK_FLAG(3), /**< tree/popup/combo is open */
+    NK_A11Y_STATE_COLLAPSED= NK_FLAG(4), /**< tree/popup/combo is closed */
+    NK_A11Y_STATE_MODAL    = NK_FLAG(5), /**< blocks interaction outside its subtree */
+    NK_A11Y_STATE_CLIPPED  = NK_FLAG(6), /**< partially or fully scrolled out of view */
+    NK_A11Y_STATE_FOCUSABLE= NK_FLAG(7), /**< reachable with focus next/previous */
+    NK_A11Y_STATE_MULTILINE= NK_FLAG(8)  /**< text input accepts multiple lines */
+};
+
+/**
+ * One semantic node. Strings are owned by the context accessibility
+ * arenas and stay valid until the next frame reset (nk_input_begin or
+ * nk_a11y_frame_reset). Node indices are stable for the lifetime of the
+ * current snapshot; node ids are stable across frames for the same
+ * semantic position even when nodes are added or removed elsewhere.
+ */
+struct nk_a11y_node {
+    nk_uint id;                 /**< stable, content derived identifier */
+    enum nk_a11y_role role;     /**< semantic role */
+    nk_flags state;             /**< combination of nk_a11y_state_flags */
+    struct nk_rect bounds;      /**< screen space rectangle */
+    int parent;                 /**< node index, -1 for the virtual root */
+    int first_child;            /**< node index, -1 when leaf */
+    int last_child;
+    int next_sibling;           /**< node index, -1 at end */
+    int prev_sibling;
+    int focus_order;            /**< zero based tab order, -1 when not focusable */
+    const char *name;           /**< accessible name, never NULL (may be "") */
+    const char *value;          /**< accessible value, NULL when the role has none */
+};
+
+/** Read only snapshot of the semantic tree recorded during a frame. */
+struct nk_a11y_snapshot {
+    const struct nk_a11y_node *const *nodes; /**< flat array, index 0 is the virtual root */
+    int count;                        /**< number of entries in nodes */
+    int root;                         /**< index of the virtual root (always 0) */
+    int focused;                      /**< index of the focused node, -1 when none */
+    unsigned int frame;               /**< context frame sequence the snapshot was built in */
+};
+
+/** Returns a non NULL static, NUL terminated name for a role. */
+NK_API const char *nk_a11y_role_name(enum nk_a11y_role role);
+
+/** Turns state flags into a deterministic "flag|flag" string (thread unsafe static buffer). */
+NK_API const char *nk_a11y_state_name(nk_flags state);
+
+/**
+ * Enables accessibility recording using the given allocator. Safe to
+ * call repeatedly; re-enabling after nk_a11y_disable() reuses existing
+ * arenas. Returns nk_false only when the allocator is NULL or an arena
+ * block could not be allocated.
+ */
+NK_API nk_bool nk_a11y_enable(struct nk_context *ctx, struct nk_allocator *alloc);
+
+/** Disables recording and frees every accessibility arena block. */
+NK_API void nk_a11y_disable(struct nk_context *ctx);
+
+/** Returns whether accessibility recording is currently enabled. */
+NK_API nk_bool nk_a11y_is_enabled(const struct nk_context *ctx);
+
+/**
+ * Starts a new recording pass. Called automatically by nk_input_begin()
+ * but exposed for harnesses that drive frames without nk_input_begin().
+ */
+NK_API void nk_a11y_frame_reset(struct nk_context *ctx);
+
+/** Returns the snapshot of the most recently recorded frame. */
+NK_API struct nk_a11y_snapshot nk_a11y_snapshot_get(const struct nk_context *ctx);
+
+/** Looks a node up by its stable id; returns NULL when not present. */
+NK_API const struct nk_a11y_node *
+nk_a11y_find_by_id(const struct nk_context *ctx, nk_uint id);
+
+/**
+ * Serialises the snapshot as deterministic, escaped JSON into the
+ * caller provided buffer. Returns the number of bytes (excluding the
+ * terminating NUL) the full document needs; if that is smaller than
+ * capacity the document is NUL terminated, otherwise nothing is
+ * written. No heap memory is allocated.
+ */
+NK_API int nk_a11y_snapshot_dump_json(const struct nk_context *ctx,
+    char *buffer, int capacity);
+
+/**
+ * Moves accessibility focus. Focus never lands on invisible, clipped
+ * away, disabled or non focusable nodes; when a modal popup is open
+ * navigation is restricted to its subtree.
+ */
+NK_API nk_bool nk_a11y_set_focus(struct nk_context *ctx, nk_uint id);
+NK_API nk_bool nk_a11y_focus_next(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_prev(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_first(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_last(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_clear(struct nk_context *ctx);
+/** Stable id of the currently focused node, 0 when nothing is focused. */
+NK_API nk_uint nk_a11y_focused_id(const struct nk_context *ctx);
+
+/**
+ * Requests the default action of a node (button press, toggle, list
+ * selection, edit focus, ...). The request is queued and replayed as
+ * ordinary mouse input: the synthetic press is injected on the next
+ * nk_input_begin() and its matching release on the nk_input_begin()
+ * after that, so the regular widget logic handles it unchanged.
+ */
+NK_API nk_bool nk_a11y_activate(struct nk_context *ctx, nk_uint id);
+
+/**
+ * Kept as an explicit pump step for applications that want one; input
+ * delivery is actually driven from nk_input_begin(), so this is a safe
+ * no-op and may be called any number of times.
+ */
+NK_API void nk_a11y_pump_input(struct nk_context *ctx);
+
 struct nk_context {
 /* public: can be accessed freely */
     struct nk_input input;
@@ -6023,6 +6210,11 @@ struct nk_context {
     struct nk_page_element *freelist;
     unsigned int count;
     unsigned int seq;
+
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    /* private accessibility runtime; see nk_a11y_* documentation */
+    struct nk_a11y_runtime *a11y;
+#endif
 };
 
 /* ==============================================================
@@ -6465,6 +6657,30 @@ NK_LIB void nk_property_behavior(nk_flags *ws, const struct nk_input *in, struct
 NK_LIB void nk_draw_property(struct nk_command_buffer *out, const struct nk_style_property *style, const struct nk_rect *bounds, const struct nk_rect *label, nk_flags state, const char *name, int len, const struct nk_user_font *font);
 NK_LIB void nk_do_property(nk_flags *ws, struct nk_command_buffer *out, struct nk_rect property, const char *name, struct nk_property_variant *variant, float inc_per_pixel, char *buffer, int *len, int *state, int *cursor, int *select_begin, int *select_end, const struct nk_style_property *style, enum nk_property_filter filter, struct nk_input *in, const struct nk_user_font *font, struct nk_text_edit *text_edit, enum nk_button_behavior behavior);
 NK_LIB void nk_property(struct nk_context *ctx, const char *name, struct nk_property_variant *variant, float inc_per_pixel, const enum nk_property_filter filter);
+
+/* accessibility semantic layer instrumentation */
+#ifdef NK_INCLUDE_ACCESSIBILITY
+struct nk_a11y_runtime;
+NK_LIB void nk_a11y_begin_frame(struct nk_context *ctx);
+NK_LIB void nk_a11y_shutdown(struct nk_context *ctx);
+NK_LIB int  nk_a11y_emit(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, const char *value, int value_len,
+    struct nk_rect bounds, nk_flags state);
+NK_LIB int  nk_a11y_emit_in(struct nk_context *ctx, int parent, nk_bool visible,
+    enum nk_a11y_role role, const char *name, int name_len,
+    const char *value, int value_len, struct nk_rect bounds, nk_flags state);
+NK_LIB nk_bool nk_a11y_rect_is_visible(struct nk_context *ctx, struct nk_rect r);
+NK_LIB int  nk_a11y_current_scope_idx(const struct nk_context *ctx);
+NK_LIB void nk_a11y_scope_push(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, struct nk_rect bounds, nk_flags state);
+NK_LIB void nk_a11y_scope_pop(struct nk_context *ctx);
+NK_LIB void nk_a11y_note_popup(struct nk_context *ctx, nk_bool modal, nk_bool open);
+NK_LIB void nk_a11y_note_edit_focus(struct nk_context *ctx, int node_index);
+#else
+#define nk_a11y_begin_frame(ctx) ((void)0)
+#define nk_a11y_shutdown(ctx) ((void)0)
+#define nk_a11y_note_popup(ctx, modal, open) ((void)0)
+#endif
 
 #ifdef NK_INCLUDE_FONT_BAKING
 
@@ -18305,6 +18521,9 @@ nk_input_begin(struct nk_context *ctx)
     in->mouse.delta.y = 0;
     for (i = 0; i < NK_KEY_MAX; i++)
         in->keyboard.keys[i].clicked = 0;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_begin_frame(ctx);
+#endif
 }
 NK_API void
 nk_input_end(struct nk_context *ctx)
@@ -19681,6 +19900,10 @@ nk_free(struct nk_context *ctx)
 {
     NK_ASSERT(ctx);
     if (!ctx) return;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (ctx->a11y)
+        nk_a11y_shutdown(ctx);
+#endif
     nk_buffer_free(&ctx->memory);
     if (ctx->use_pool)
         nk_pool_free(&ctx->pool);
@@ -21068,6 +21291,11 @@ nk_begin_titled(struct nk_context *ctx, const char *name, const char *title,
     ret = nk_panel_begin(ctx, title, NK_PANEL_WINDOW);
     win->layout->offset_x = &win->scrollbar.x;
     win->layout->offset_y = &win->scrollbar.y;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (ret)
+        nk_a11y_scope_push(ctx, NK_A11Y_ROLE_WINDOW, title,
+            (int)nk_strlen(title), win->bounds, 0);
+#endif
     return ret;
 }
 NK_API void
@@ -21084,6 +21312,10 @@ nk_end(struct nk_context *ctx)
         ctx->current = 0;
         return;
     }
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    if (layout->type == NK_PANEL_WINDOW)
+        nk_a11y_scope_pop(ctx);
+#endif
     nk_panel_end(ctx);
     nk_free_panel(ctx, ctx->current->layout);
     ctx->current = 0;
@@ -21542,6 +21774,12 @@ nk_popup_begin(struct nk_context *ctx, enum nk_popup_type type,
         popup->layout->offset_x = &popup->scrollbar.x;
         popup->layout->offset_y = &popup->scrollbar.y;
         popup->layout->parent = win->layout;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+        nk_a11y_scope_push(ctx, NK_A11Y_ROLE_MENU, title, title_len,
+            popup->bounds, NK_A11Y_STATE_EXPANDED);
+        /* blocking popups are application modal */
+        nk_a11y_note_popup(ctx, nk_true, nk_true);
+#endif
         return 1;
     } else {
         /* popup was closed/is invalid so cleanup */
@@ -21642,6 +21880,22 @@ nk_nonblock_begin(struct nk_context *ctx,
         root->flags |= NK_WINDOW_ROM;
         root = root->parent;
     }}
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        enum nk_a11y_role arole =
+            (panel_type == NK_PANEL_MENU || panel_type == NK_PANEL_CONTEXTUAL) ?
+            NK_A11Y_ROLE_MENU : NK_A11Y_ROLE_PANE;
+        /* The combo header already carries the COMBO_BOX role, so the
+         * combo popup itself is recorded as a neutral container holding
+         * the list items rather than as a second combo box. */
+        nk_a11y_scope_push(ctx, arole,
+            arole == NK_A11Y_ROLE_MENU ? win->name_string : "",
+            arole == NK_A11Y_ROLE_MENU ? (int)nk_strlen(win->name_string) : 0,
+            popup->bounds, NK_A11Y_STATE_EXPANDED);
+        /* non-blocking popups still capture all input while open */
+        nk_a11y_note_popup(ctx, nk_true, nk_true);
+    }
+#endif
     return is_active;
 }
 NK_API void
@@ -21671,6 +21925,10 @@ nk_popup_end(struct nk_context *ctx)
     popup = ctx->current;
     if (!popup->parent) return;
     win = popup->parent;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_note_popup(ctx, nk_true, nk_false);
+    nk_a11y_scope_pop(ctx);
+#endif
     if (popup->flags & NK_WINDOW_HIDDEN) {
         struct nk_panel *root;
         root = win->layout;
@@ -21816,6 +22074,10 @@ nk_contextual_item_text(struct nk_context *ctx, const char *text, int len,
     if (!state) return nk_false;
 
     in = (state == NK_WIDGET_ROM || win->layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_MENU_ITEM, text, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     if (nk_do_button_text(&ctx->last_widget_state, &win->buffer, bounds,
         text, len, alignment, NK_BUTTON_DEFAULT, &style->contextual_button, in, style->font)) {
         nk_contextual_close(ctx);
@@ -22079,6 +22341,10 @@ nk_menu_begin_text(struct nk_context *ctx, const char *title, int len,
     state = nk_widget(&header, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || win->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_MENU_ITEM, title, len, 0, 0, header,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     if (nk_do_button_text(&ctx->last_widget_state, &win->buffer, header,
         title, len, align, NK_BUTTON_DEFAULT, &ctx->style.menu_button, in, ctx->style.font))
         is_clicked = nk_true;
@@ -23127,6 +23393,14 @@ nk_tree_state_base(struct nk_context *ctx, enum nk_tree_type type,
     nk_widget_text(out, label, title, nk_strlen(title), &text,
         NK_TEXT_LEFT, style->font);}
 
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_TREE_ITEM, title,
+        (int)nk_strlen(title), 0, 0, header,
+        (widget_state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (*state == NK_MAXIMIZED ? NK_A11Y_STATE_EXPANDED :
+         NK_A11Y_STATE_COLLAPSED));
+#endif
+
     /* increase x-axis cursor widget position pointer */
     if (*state == NK_MAXIMIZED) {
         layout->at_x = header.x + (float)*layout->offset_x + style->tab.indent;
@@ -23426,6 +23700,10 @@ nk_group_scrolled_offset_begin(struct nk_context *ctx,
         if (f & NK_WINDOW_MINIMIZED)
             return NK_WINDOW_MINIMIZED;
     }
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_scope_push(ctx, NK_A11Y_ROLE_GROUP, title,
+        title ? (int)nk_strlen(title) : 0, panel.bounds, 0);
+#endif
     return 1;
 }
 NK_API void
@@ -23451,6 +23729,9 @@ nk_group_scrolled_end(struct nk_context *ctx)
     g = win->layout;
     NK_ASSERT(g->parent);
     parent = g->parent;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_scope_pop(ctx);
+#endif
 
     /* dummy window */
     nk_zero_struct(pan);
@@ -23687,6 +23968,8 @@ nk_list_view_begin(struct nk_context *ctx, struct nk_list_view *view,
     view->count = NK_MIN(view->count, row_count - view->begin);
     view->end = view->begin + view->count;
     view->ctx = ctx;
+    /* the list view is backed by a group, which already records a GROUP
+     * scope containing all visible row widgets; no extra push needed */
     return result;
 }
 NK_API void
@@ -24180,6 +24463,9 @@ nk_text_colored(struct nk_context *ctx, const char *str, int len,
     text.padding.y = item_padding.y;
     text.background = style->window.background;
     text.text = nk_rgb_factor(color, style->text.color_factor);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LABEL, str, len, 0, 0, bounds, 0);
+#endif
     nk_widget_text(&win->buffer, bounds, str, len, &text, alignment, style->font);
 }
 NK_API void
@@ -24207,6 +24493,9 @@ nk_text_wrap_colored(struct nk_context *ctx, const char *str,
     text.padding.y = item_padding.y;
     text.background = style->window.background;
     text.text = nk_rgb_factor(color, style->text.color_factor);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LABEL, str, len, 0, 0, bounds, 0);
+#endif
     nk_widget_text_wrap(&win->buffer, bounds, str, len, &text, style->font);
 }
 #ifdef NK_INCLUDE_STANDARD_VARARGS
@@ -24527,6 +24816,10 @@ nk_link_text_styled(struct nk_context *ctx, const struct nk_style_link *style,
 
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LINK, title, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_link(&ctx->last_widget_state, &win->buffer, bounds,
                     title, len, align, style, in, ctx->style.font,
                     ctx->style.window.background);
@@ -25400,6 +25693,10 @@ nk_button_text_styled(struct nk_context *ctx,
 
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, title, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_button_text(&ctx->last_widget_state, &win->buffer, bounds,
                     title, len, style->text_alignment, ctx->button_behavior,
                     style, in, ctx->style.font);
@@ -25450,6 +25747,10 @@ nk_button_color(struct nk_context *ctx, struct nk_color color)
     button.normal = nk_style_item_color(color);
     button.hover = nk_style_item_color(color);
     button.active = nk_style_item_color(color);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, "color", 5, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     ret = nk_do_button(&ctx->last_widget_state, &win->buffer, bounds,
                 &button, in, ctx->button_behavior, &content);
     nk_draw_button(&win->buffer, &bounds, ctx->last_widget_state, &button);
@@ -25477,6 +25778,13 @@ nk_button_symbol_styled(struct nk_context *ctx,
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char symname[24]; int slen = nk_itoa(symname, (int)symbol) - symname;
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, symname, slen, 0, 0, bounds,
+            state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+    }
+#endif
     return nk_do_button_symbol(&ctx->last_widget_state, &win->buffer, bounds,
             symbol, ctx->button_behavior, style, in, ctx->style.font);
 }
@@ -25510,6 +25818,10 @@ nk_button_image_styled(struct nk_context *ctx, const struct nk_style_button *sty
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, "image", 5, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_button_image(&ctx->last_widget_state, &win->buffer, bounds,
                 img, ctx->button_behavior, style, in);
 }
@@ -25544,6 +25856,10 @@ nk_button_symbol_text_styled(struct nk_context *ctx,
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, text, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_button_text_symbol(&ctx->last_widget_state, &win->buffer, bounds,
                 symbol, text, len, align, ctx->button_behavior,
                 style, ctx->style.font, in);
@@ -25591,6 +25907,10 @@ nk_button_image_text_styled(struct nk_context *ctx,
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_BUTTON, text, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     return nk_do_button_text_image(&ctx->last_widget_state, &win->buffer,
             bounds, img, text, len, align, ctx->button_behavior,
             style, ctx->style.font, in);
@@ -25839,6 +26159,11 @@ nk_check_text(struct nk_context *ctx, const char *text, int len, nk_bool active)
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
     nk_do_toggle(&ctx->last_widget_state, &win->buffer, bounds, &active,
         text, len, NK_TOGGLE_CHECK, &style->checkbox, in, style->font, NK_WIDGET_LEFT, NK_TEXT_LEFT);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_TOGGLE_BUTTON, text, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (active ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return active;
 }
 NK_API nk_bool
@@ -25978,6 +26303,11 @@ nk_option_text(struct nk_context *ctx, const char *text, int len, nk_bool is_act
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
     nk_do_toggle(&ctx->last_widget_state, &win->buffer, bounds, &is_active,
         text, len, NK_TOGGLE_OPTION, &style->option, in, style->font, NK_WIDGET_LEFT, NK_TEXT_LEFT);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_RADIO_BUTTON, text, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (is_active ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return is_active;
 }
 NK_API nk_bool
@@ -26278,6 +26608,11 @@ nk_selectable_text(struct nk_context *ctx, const char *str, int len,
     state = nk_widget(&bounds, ctx);
     if (!state) return 0;
     in = (state == NK_WIDGET_ROM || state == NK_WIDGET_DISABLED || layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_LIST_ITEM, str, len, 0, 0, bounds,
+        (state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+        (*value ? NK_A11Y_STATE_CHECKED : 0));
+#endif
     return nk_do_selectable(&ctx->last_widget_state, &win->buffer, bounds,
                 str, len, align, value, &style->selectable, in, style->font);
 }
@@ -26621,6 +26956,15 @@ nk_slider_float(struct nk_context *ctx, float min_value, float *value, float max
     old_value = *value;
     *value = nk_do_slider(&ctx->last_widget_state, &win->buffer, bounds, min_value,
                 old_value, max_value, value_step, &style->slider, in, style->font);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen;
+        nk_itoa(vbuf, (int)(*value));
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_SLIDER, "slider", 6, vbuf, vlen,
+            bounds, state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+    }
+#endif
     return (old_value > *value || old_value < *value);
 }
 NK_API float
@@ -27048,6 +27392,16 @@ nk_progress(struct nk_context *ctx, nk_size *cur, nk_size max, nk_bool is_modify
     old_value = *cur;
     *cur = nk_do_progress(&ctx->last_widget_state, &win->buffer, bounds,
             *cur, max, is_modifyable, &style->progress, in);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen;
+        nk_itoa(vbuf, (int)*cur);
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_PROGRESS_BAR, "progress", 8,
+            vbuf, vlen, bounds,
+            state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+    }
+#endif
     return (*cur != old_value);
 }
 NK_API nk_size
@@ -29218,6 +29572,20 @@ nk_edit_buffer(struct nk_context *ctx, nk_flags flags,
     in = (flags & NK_EDIT_READ_ONLY) ? 0: in;
     ret_flags = nk_do_edit(&ctx->last_widget_state, &win->buffer, bounds, flags,
                     filter, edit, &style->edit, in, style->font);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        nk_flags astate = (state == NK_WIDGET_DISABLED) ?
+            NK_A11Y_STATE_DISABLED : 0;
+        int aindex;
+        if (flags & NK_EDIT_MULTILINE)
+            astate |= NK_A11Y_STATE_MULTILINE;
+        aindex = nk_a11y_emit(ctx, NK_A11Y_ROLE_TEXT_INPUT, "edit", 4,
+            nk_str_get_const(&edit->string),
+            nk_str_len_char(&edit->string), bounds, astate);
+        if (edit->active && aindex >= 0)
+            nk_a11y_note_edit_focus(ctx, aindex);
+    }
+#endif
 
     if (ctx->last_widget_state & NK_WIDGET_STATE_HOVER)
         ctx->style.cursor_active = ctx->style.cursors[NK_CURSOR_TEXT];
@@ -29653,6 +30021,21 @@ nk_property(struct nk_context *ctx, const char *name, struct nk_property_variant
         variant, inc_per_pixel, buffer, len, state, cursor, select_begin,
         select_end, &style->property, filter, in, style->font, &ctx->text_edit,
         ctx->button_behavior);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen = 0;
+        nk_flags aflags = (s == NK_WIDGET_DISABLED) ? NK_A11Y_STATE_DISABLED : 0;
+        if (filter == NK_FILTER_INT)
+            nk_itoa(vbuf, variant->value.i);
+        else if (variant->kind == NK_PROPERTY_FLOAT)
+            nk_dtoa(vbuf, (double)variant->value.f);
+        else
+            nk_dtoa(vbuf, variant->value.d);
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_SPIN_BUTTON, name,
+            (int)nk_strlen(name), vbuf, vlen, bounds, aflags);
+    }
+#endif
 
     if (in && *state != NK_PROPERTY_DEFAULT && !hot) {
         /* another property was active */
@@ -30392,6 +30775,10 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
     struct nk_rect header;
     const struct nk_style_item *background;
     struct nk_text text;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    int a11y_parent = -1;
+    nk_bool a11y_visible = nk_false;
+#endif
 
     NK_ASSERT(ctx);
     NK_ASSERT(selected);
@@ -30405,6 +30792,12 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
     s = nk_widget(&header, ctx);
     if (s == NK_WIDGET_INVALID)
         return 0;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    /* capture the header scope/visibility before the popup changes the
+     * current window and clip rectangle */
+    a11y_parent = nk_a11y_current_scope_idx(ctx);
+    a11y_visible = nk_a11y_rect_is_visible(ctx, header);
+#endif
 
     in = (win->layout->flags & NK_WINDOW_ROM || s == NK_WIDGET_DISABLED || s == NK_WIDGET_ROM)? 0: &ctx->input;
     if (nk_button_behavior(&ctx->last_widget_state, header, in, NK_BUTTON_DEFAULT))
@@ -30485,7 +30878,18 @@ nk_combo_begin_text(struct nk_context *ctx, const char *selected, int len,
             nk_draw_button_symbol(&win->buffer, &button, &content, ctx->last_widget_state,
                 &ctx->style.combo.button, sym, style->font);
     }
-    return nk_combo_begin(ctx, win, size, is_clicked, header);
+    {
+        nk_bool opened = nk_combo_begin(ctx, win, size, is_clicked, header);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+        /* emit with the pre-popup scope and visibility so the header is
+         * recorded as a child of its own window even while open */
+        nk_a11y_emit_in(ctx, a11y_parent, a11y_visible,
+            NK_A11Y_ROLE_COMBO_BOX, selected, len, selected, len,
+            header, (s == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0) |
+            (opened ? NK_A11Y_STATE_EXPANDED : NK_A11Y_STATE_COLLAPSED));
+#endif
+        return opened;
+    }
 }
 NK_API nk_bool
 nk_combo_begin_label(struct nk_context *ctx, const char *selected, struct nk_vec2 size)
@@ -31399,6 +31803,1079 @@ nk_tooltipfv(struct nk_context *ctx, const char *fmt, va_list args)
 #endif
 
 
+
+
+
+
+/* ===============================================================
+ *
+ *                          ACCESSIBILITY
+ *
+ * Optional semantic layer. Instrumented widgets call nk_a11y_emit()
+ * while the immediate mode UI is built; the calls produce a tree of
+ * nk_a11y_node describing the visible interface of the current frame.
+ *
+ * All storage is paged/growable and reused across frames:
+ *
+ *   - node blocks hold NK_A11Y_NODE_PAGE nodes each,
+ *   - text blocks hold NK_A11Y_TEXT_PAGE label/value bytes each,
+ *   - a flat index array gives O(1) index based access and only
+ *     grows (doubling) when the working set grows,
+ *
+ * A frame reset only rewinds cursors and counts (O(1)); all blocks are
+ * kept for the next frame so a steady workload performs zero heap
+ * allocations per frame and never allocates per widget.
+ *
+ * ===============================================================*/
+#ifdef NK_INCLUDE_ACCESSIBILITY
+
+struct nk_a11y_node_block {
+    struct nk_a11y_node_block *next;
+    int count;
+    struct nk_a11y_node node[NK_A11Y_NODE_PAGE];
+};
+
+struct nk_a11y_text_block {
+    struct nk_a11y_text_block *next;
+    int used;
+    char data[NK_A11Y_TEXT_PAGE];
+};
+
+struct nk_a11y_dup_entry {
+    nk_hash key;
+    int occurrences;
+};
+
+struct nk_a11y_dup_block {
+    struct nk_a11y_dup_block *next;
+    int count;
+    struct nk_a11y_dup_entry entry[NK_A11Y_NODE_PAGE];
+};
+
+struct nk_a11y_pending_click {
+    int x, y;
+    nk_bool valid;
+};
+
+struct nk_a11y_runtime {
+    nk_bool enabled;
+    struct nk_allocator alloc;
+
+    /* node storage blocks + flat index (capacity retained across frames) */
+    struct nk_a11y_node_block *nodes;
+    struct nk_a11y_node **flat;
+    int flat_count;
+    int flat_cap;
+
+    /* string arena */
+    struct nk_a11y_text_block *texts;
+
+    /* per-parent duplicate name bookkeeping (rewound each frame) */
+    struct nk_a11y_dup_block *dups;
+
+    /* scope stack: node indices of open windows/groups/popups */
+    int scope[NK_A11Y_SCOPE_DEPTH];
+    int scope_depth;
+
+    /* modal restriction: scope depth that focus must stay inside */
+    int modal_scope;
+    int modal_node;
+
+    nk_uint focused_id;      /* persistent across frames, 0 = none */
+    int focused_index;       /* resolved during the current frame */
+    int focus_counter;       /* tab order assigned this frame */
+    unsigned int frame;
+
+    /* synthetic input queued by nk_a11y_activate(); replay is split so
+     * the press and release land in different frames */
+    struct nk_a11y_pending_click pending;
+    nk_bool release_queued;
+};
+
+static int a11y_strlen(const char *s)
+{
+    int n = 0;
+    if (!s) return 0;
+    while (s[n]) ++n;
+    return n;
+}
+
+/* ----------------------------------------------------------------
+ * Arena lifecycle
+ * ---------------------------------------------------------------- */
+NK_LIB void
+nk_a11y_shutdown(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    if (!ctx || !ctx->a11y) return;
+    a = ctx->a11y;
+    while (a->nodes) {
+        struct nk_a11y_node_block *next = a->nodes->next;
+        a->alloc.free(a->alloc.userdata, a->nodes);
+        a->nodes = next;
+    }
+    while (a->texts) {
+        struct nk_a11y_text_block *next = a->texts->next;
+        a->alloc.free(a->alloc.userdata, a->texts);
+        a->texts = next;
+    }
+    while (a->dups) {
+        struct nk_a11y_dup_block *next = a->dups->next;
+        a->alloc.free(a->alloc.userdata, a->dups);
+        a->dups = next;
+    }
+    if (a->flat) a->alloc.free(a->alloc.userdata, a->flat);
+    a->alloc.free(a->alloc.userdata, a);
+    ctx->a11y = 0;
+}
+
+NK_API nk_bool
+nk_a11y_enable(struct nk_context *ctx, struct nk_allocator *alloc)
+{
+    NK_ASSERT(ctx);
+    if (!ctx || !alloc) return nk_false;
+    if (ctx->a11y) {
+        ctx->a11y->enabled = nk_true;
+        return nk_true;
+    }
+    ctx->a11y = (struct nk_a11y_runtime*)
+        alloc->alloc(alloc->userdata, 0, sizeof(struct nk_a11y_runtime));
+    if (!ctx->a11y) return nk_false;
+    NK_MEMSET(ctx->a11y, 0, sizeof(*ctx->a11y));
+    ctx->a11y->alloc = *alloc;
+    ctx->a11y->enabled = nk_true;
+    ctx->a11y->modal_scope = -1;
+    ctx->a11y->modal_node = -1;
+    nk_a11y_begin_frame(ctx);
+    return nk_true;
+}
+
+NK_API void
+nk_a11y_disable(struct nk_context *ctx)
+{
+    if (!ctx || !ctx->a11y) return;
+    nk_a11y_shutdown(ctx);
+}
+
+NK_API nk_bool
+nk_a11y_is_enabled(const struct nk_context *ctx)
+{
+    if (!ctx || !ctx->a11y) return nk_false;
+    return ctx->a11y->enabled;
+}
+
+static struct nk_a11y_node_block*
+a11y_new_node_block(struct nk_a11y_runtime *a)
+{
+    struct nk_a11y_node_block *b = (struct nk_a11y_node_block*)
+        a->alloc.alloc(a->alloc.userdata, 0, sizeof(*b));
+    if (!b) return 0;
+    b->next = 0;
+    b->count = 0;
+    return b;
+}
+
+static struct nk_a11y_text_block*
+a11y_new_text_block(struct nk_a11y_runtime *a)
+{
+    struct nk_a11y_text_block *b = (struct nk_a11y_text_block*)
+        a->alloc.alloc(a->alloc.userdata, 0, sizeof(*b));
+    if (!b) return 0;
+    b->next = 0;
+    b->used = 0;
+    return b;
+}
+
+static struct nk_a11y_dup_block*
+a11y_new_dup_block(struct nk_a11y_runtime *a)
+{
+    struct nk_a11y_dup_block *b = (struct nk_a11y_dup_block*)
+        a->alloc.alloc(a->alloc.userdata, 0, sizeof(*b));
+    if (!b) return 0;
+    b->next = 0;
+    b->count = 0;
+    return b;
+}
+
+/* Grow the flat index by doubling; the allocation is retained for the
+ * lifetime of the runtime so steady-state frames never allocate. */
+static nk_bool
+a11y_flat_reserve(struct nk_a11y_runtime *a, int need)
+{
+    int newcap;
+    struct nk_a11y_node **grown;
+    if (need <= a->flat_cap) return nk_true;
+    newcap = a->flat_cap ? a->flat_cap : 64;
+    while (newcap < need) newcap *= 2;
+    grown = (struct nk_a11y_node**)a->alloc.alloc(a->alloc.userdata,
+        a->flat, (nk_size)newcap * sizeof(struct nk_a11y_node*));
+    if (!grown) return nk_false;
+    a->flat = grown;
+    a->flat_cap = newcap;
+    return nk_true;
+}
+
+/* Copy `len` bytes into the string arena, always NUL terminated.
+ * Truncates at NK_A11Y_NAME_MAX. Empty input returns NULL. */
+static const char*
+a11y_intern(struct nk_a11y_runtime *a, const char *text, int len)
+{
+    int copy;
+    char *dst;
+    struct nk_a11y_text_block *b;
+
+    if (!text || len <= 0) return 0;
+    if (len > NK_A11Y_NAME_MAX) len = NK_A11Y_NAME_MAX;
+    copy = len;
+
+    b = a->texts;
+    if (!b || b->used + copy + 1 > NK_A11Y_TEXT_PAGE) {
+        struct nk_a11y_text_block *nb = a11y_new_text_block(a);
+        if (!nb) return 0;
+        nb->next = a->texts;
+        a->texts = nb;
+        b = nb;
+    }
+    dst = b->data + b->used;
+    NK_MEMCPY(dst, text, (nk_size)copy);
+    dst[copy] = 0;
+    b->used += copy + 1;
+    return dst;
+}
+
+/* FNV-1a 32 bit, deterministic across platforms/compilers. */
+static nk_hash
+a11y_hash_bytes(const char *data, int len, nk_hash seed)
+{
+    nk_hash h = seed ? seed : 2166136261u;
+    int i;
+    for (i = 0; i < len; ++i) {
+        h ^= (nk_hash)(unsigned char)data[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Count same-named children already recorded for `key`, reserve next. */
+static int
+a11y_dup_reserve(struct nk_a11y_runtime *a, nk_hash key)
+{
+    struct nk_a11y_dup_block *b;
+    struct nk_a11y_dup_block *tail = 0;
+    int i;
+
+    b = a->dups;
+    while (b) {
+        for (i = 0; i < b->count; ++i) {
+            if (b->entry[i].key == key)
+                return b->entry[i].occurrences++;
+        }
+        tail = b;
+        b = b->next;
+    }
+    if (!a->dups || a->dups->count >= NK_A11Y_NODE_PAGE) {
+        struct nk_a11y_dup_block *nb = a11y_new_dup_block(a);
+        if (!nb) return 0;
+        nb->next = a->dups;
+        a->dups = nb;
+        tail = nb;
+    }
+    if (tail) {
+        i = tail->count++;
+        tail->entry[i].key = key;
+        tail->entry[i].occurrences = 1;
+    }
+    return 0;
+}
+
+/* Stable id from parent id + local name + same-name occurrence. */
+static nk_uint
+a11y_make_id(nk_uint parent_id, const char *name, int name_len, int occurrence)
+{
+    nk_hash h = a11y_hash_bytes(name, name_len, parent_id * 2654435761u + 1u);
+    h = a11y_hash_bytes((const char*)&occurrence, (int)sizeof(occurrence), h);
+    if (h == 0) h = 1;
+    return (nk_uint)h;
+}
+
+/* ----------------------------------------------------------------
+ * Frame lifecycle
+ * ---------------------------------------------------------------- */
+NK_LIB void
+nk_a11y_begin_frame(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    struct nk_a11y_node_block *nb;
+    struct nk_a11y_dup_block *db;
+    struct nk_a11y_node *root;
+
+    if (!ctx || !ctx->a11y) return;
+    a = ctx->a11y;
+    if (!a->enabled) return;
+
+    /* rewind arenas in O(1); allocated blocks are kept for reuse */
+    nb = a->nodes;
+    while (nb) {
+        nb->count = 0;
+        nb = nb->next;
+    }
+    if (a->texts) a->texts->used = 0;
+    {
+        struct nk_a11y_text_block *tb = a->texts ? a->texts->next : 0;
+        while (tb) {
+            struct nk_a11y_text_block *next = tb->next;
+            a->alloc.free(a->alloc.userdata, tb);
+            tb = next;
+        }
+        if (a->texts) a->texts->next = 0;
+    }
+    db = a->dups;
+    while (db) {
+        db->count = 0;
+        db = db->next;
+    }
+
+    a->flat_count = 0;
+    a->scope_depth = 0;
+    a->modal_scope = -1;
+    a->modal_node = -1;
+    a->focus_counter = 0;
+    a->focused_index = -1;
+    a->frame++;
+
+    /* replay queued accessibility input after nk_input_begin cleared the
+     * transient click counters. A queued press is delivered this frame
+     * and its matching release deferred to the following frame so the
+     * immediate mode widget logic observes a real press/release cycle. */
+    if (a->release_queued) {
+        nk_input_button(ctx, NK_BUTTON_LEFT,
+            a->pending.x, a->pending.y, nk_false);
+        a->release_queued = nk_false;
+        a->pending.valid = nk_false;
+    } else if (a->pending.valid) {
+        nk_input_motion(ctx, a->pending.x, a->pending.y);
+        nk_input_button(ctx, NK_BUTTON_LEFT,
+            a->pending.x, a->pending.y, nk_true);
+        a->release_queued = nk_true;
+    }
+
+    /* index 0 is the virtual document root */
+    if (!a->nodes) {
+        a->nodes = a11y_new_node_block(a);
+        if (!a->nodes) return;
+    }
+    if (!a11y_flat_reserve(a, 1)) return;
+    root = &a->nodes->node[0];
+    NK_MEMSET(root, 0, sizeof(*root));
+    root->id = 1;
+    root->role = NK_A11Y_ROLE_PANE;
+    root->parent = -1;
+    root->first_child = root->last_child = -1;
+    root->next_sibling = root->prev_sibling = -1;
+    root->focus_order = -1;
+    root->name = "";
+    root->value = 0;
+    a->nodes->count = 1;
+    a->flat[0] = root;
+    a->flat_count = 1;
+}
+
+NK_API void
+nk_a11y_frame_reset(struct nk_context *ctx)
+{
+    nk_a11y_begin_frame(ctx);
+}
+
+static struct nk_a11y_node*
+a11y_node_at(struct nk_a11y_runtime *a, int index)
+{
+    if (index < 0 || index >= a->flat_count) return 0;
+    return a->flat[index];
+}
+
+/* ----------------------------------------------------------------
+ * Visibility
+ * ---------------------------------------------------------------- */
+static nk_bool
+a11y_rect_visible(struct nk_context *ctx, struct nk_rect r)
+{
+    struct nk_panel *panel;
+    struct nk_rect clip;
+    if (!ctx->current || !ctx->current->layout) return nk_false;
+    panel = ctx->current->layout;
+    clip = panel->clip;
+    return NK_INTERSECT(clip.x, clip.y, clip.w, clip.h,
+        r.x, r.y, r.w, r.h) ? nk_true : nk_false;
+}
+
+/* ----------------------------------------------------------------
+ * Node emission
+ * ---------------------------------------------------------------- */
+NK_LIB nk_bool
+nk_a11y_rect_is_visible(struct nk_context *ctx, struct nk_rect r)
+{
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    return a11y_rect_visible(ctx, r);
+}
+
+NK_LIB int
+nk_a11y_emit_in(struct nk_context *ctx, int parent, nk_bool visible,
+    enum nk_a11y_role role, const char *name, int name_len,
+    const char *value, int value_len, struct nk_rect bounds, nk_flags state)
+{
+    struct nk_a11y_runtime *a;
+    struct nk_a11y_node_block *b;
+    struct nk_a11y_node *node, *parent_node;
+    int index, occurrence, nlen;
+    nk_hash name_key, id;
+    const char *name_copy, *value_copy;
+
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return -1;
+    a = ctx->a11y;
+
+    /* Fully clipped / scrolled-away / hidden widgets are excluded:
+     * focus can never land on an invisible control. */
+    if (!visible) return -1;
+
+    if (parent < 0)
+        parent = a->scope_depth ? a->scope[a->scope_depth - 1] : 0;
+
+    name_copy = a11y_intern(a, name, name_len);
+    value_copy = a11y_intern(a, value, value_len);
+    if (!name_copy) name_copy = "";
+    nlen = a11y_strlen(name_copy);
+
+    /* stable identity: parent id + name + per-parent occurrence so
+     * repeated labels and dynamic add/remove stay addressable */
+    parent_node = a11y_node_at(a, parent);
+    name_key = a11y_hash_bytes(name_copy, nlen,
+        (nk_hash)(parent + 1) * 2654435761u);
+    occurrence = a11y_dup_reserve(a, name_key);
+    id = a11y_make_id(parent_node ? parent_node->id : 1,
+        name_copy, nlen, occurrence);
+
+    /* allocate a slot, growing the node block chain when full */
+    b = a->nodes;
+    while (b->next) b = b->next;
+    if (b->count >= NK_A11Y_NODE_PAGE) {
+        struct nk_a11y_node_block *nb = a11y_new_node_block(a);
+        if (!nb) return -1;
+        b->next = nb;
+        b = nb;
+    }
+    if (!a11y_flat_reserve(a, a->flat_count + 1)) return -1;
+    index = a->flat_count++;
+    node = &b->node[b->count++];
+    NK_MEMSET(node, 0, sizeof(*node));
+    node->id = id;
+    node->role = role;
+    node->bounds = bounds;
+    node->parent = parent;
+    node->first_child = node->last_child = -1;
+    node->next_sibling = node->prev_sibling = -1;
+    node->focus_order = -1;
+    node->name = name_copy;
+    node->value = value_copy;
+    node->state = state;
+    a->flat[index] = node;
+
+    /* link into parent's child list */
+    NK_ASSERT(parent_node);
+    if (parent_node) {
+        if (parent_node->first_child < 0) {
+            parent_node->first_child = index;
+            parent_node->last_child = index;
+        } else {
+            struct nk_a11y_node *last =
+                a11y_node_at(a, parent_node->last_child);
+            if (last) {
+                last->next_sibling = index;
+                node->prev_sibling = parent_node->last_child;
+            }
+            parent_node->last_child = index;
+        }
+    }
+
+    /* tab order; disabled controls are never focusable */
+    if (!(state & NK_A11Y_STATE_DISABLED)) {
+        node->state |= NK_A11Y_STATE_FOCUSABLE;
+        node->focus_order = a->focus_counter++;
+    }
+    if (a->focused_id && id == a->focused_id) {
+        node->state |= NK_A11Y_STATE_FOCUSED;
+        a->focused_index = index;
+    }
+    return index;
+}
+
+NK_LIB int
+nk_a11y_emit(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, const char *value, int value_len,
+    struct nk_rect bounds, nk_flags state)
+{
+    return nk_a11y_emit_in(ctx, -1, a11y_rect_visible(ctx, bounds),
+        role, name, name_len, value, value_len, bounds, state);
+}
+
+NK_LIB void
+nk_a11y_scope_push(struct nk_context *ctx, enum nk_a11y_role role,
+    const char *name, int name_len, struct nk_rect bounds, nk_flags state)
+{
+    struct nk_a11y_runtime *a;
+    int idx;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return;
+    a = ctx->a11y;
+    idx = nk_a11y_emit(ctx, role, name, name_len, 0, 0, bounds, state);
+    if (idx < 0) return;
+    if (a->scope_depth >= NK_A11Y_SCOPE_DEPTH) {
+        NK_ASSERT(!"NK_A11Y_SCOPE_DEPTH exceeded");
+        return;
+    }
+    a->scope[a->scope_depth++] = idx;
+}
+
+NK_LIB void
+nk_a11y_scope_pop(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return;
+    a = ctx->a11y;
+    if (a->scope_depth > 0)
+        a->scope_depth--;
+}
+
+NK_LIB int
+nk_a11y_current_scope_idx(const struct nk_context *ctx)
+{
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled || !ctx->a11y->scope_depth)
+        return -1;
+    return ctx->a11y->scope[ctx->a11y->scope_depth - 1];
+}
+
+NK_LIB void
+nk_a11y_note_popup(struct nk_context *ctx, nk_bool modal, nk_bool open)
+{
+    struct nk_a11y_runtime *a;
+    int scope;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return;
+    a = ctx->a11y;
+    if (!open) {
+        if (a->modal_scope >= 0 && a->scope_depth <= a->modal_scope) {
+            a->modal_scope = -1;
+            a->modal_node = -1;
+        }
+        return;
+    }
+    scope = a->scope_depth - 1;
+    if (modal && scope > a->modal_scope) {
+        a->modal_scope = scope;
+        a->modal_node = scope >= 0 ? a->scope[scope] : -1;
+        if (a->modal_node >= 0) {
+            struct nk_a11y_node *n = a11y_node_at(a, a->modal_node);
+            if (n) n->state |= NK_A11Y_STATE_MODAL;
+        }
+    }
+}
+
+NK_LIB void
+nk_a11y_note_edit_focus(struct nk_context *ctx, int node_index)
+{
+    struct nk_a11y_runtime *a;
+    struct nk_a11y_node *n;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return;
+    a = ctx->a11y;
+    n = a11y_node_at(a, node_index);
+    if (!n) return;
+    n->state |= NK_A11Y_STATE_FOCUSED;
+    a->focused_id = n->id;
+    a->focused_index = node_index;
+}
+
+/* ----------------------------------------------------------------
+ * Snapshot
+ * ---------------------------------------------------------------- */
+NK_API struct nk_a11y_snapshot
+nk_a11y_snapshot_get(const struct nk_context *ctx)
+{
+    struct nk_a11y_snapshot snap;
+    NK_MEMSET(&snap, 0, sizeof(snap));
+    snap.root = 0;
+    snap.focused = -1;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return snap;
+    snap.nodes = (const struct nk_a11y_node *const *)ctx->a11y->flat;
+    snap.count = ctx->a11y->flat_count;
+    snap.focused = ctx->a11y->focused_index;
+    snap.frame = ctx->a11y->frame;
+    return snap;
+}
+
+static struct nk_a11y_node*
+a11y_find(struct nk_a11y_runtime *a, nk_uint id)
+{
+    int i;
+    for (i = 0; i < a->flat_count; ++i)
+        if (a->flat[i]->id == id) return a->flat[i];
+    return 0;
+}
+
+static int
+a11y_index_of(struct nk_a11y_runtime *a, const struct nk_a11y_node *target)
+{
+    int i;
+    for (i = 0; i < a->flat_count; ++i)
+        if (a->flat[i] == target) return i;
+    return -1;
+}
+
+NK_API const struct nk_a11y_node*
+nk_a11y_find_by_id(const struct nk_context *ctx, nk_uint id)
+{
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return 0;
+    return a11y_find(ctx->a11y, id);
+}
+
+/* ----------------------------------------------------------------
+ * Role / state names
+ * ---------------------------------------------------------------- */
+NK_API const char*
+nk_a11y_role_name(enum nk_a11y_role role)
+{
+    switch (role) {
+    case NK_A11Y_ROLE_WINDOW: return "window";
+    case NK_A11Y_ROLE_GROUP: return "group";
+    case NK_A11Y_ROLE_PANE: return "pane";
+    case NK_A11Y_ROLE_BUTTON: return "button";
+    case NK_A11Y_ROLE_TOGGLE_BUTTON: return "toggle_button";
+    case NK_A11Y_ROLE_RADIO_BUTTON: return "radio_button";
+    case NK_A11Y_ROLE_TEXT_INPUT: return "text_input";
+    case NK_A11Y_ROLE_COMBO_BOX: return "combo_box";
+    case NK_A11Y_ROLE_LIST: return "list";
+    case NK_A11Y_ROLE_LIST_ITEM: return "list_item";
+    case NK_A11Y_ROLE_MENU: return "menu";
+    case NK_A11Y_ROLE_MENU_ITEM: return "menu_item";
+    case NK_A11Y_ROLE_TREE_ITEM: return "tree_item";
+    case NK_A11Y_ROLE_SLIDER: return "slider";
+    case NK_A11Y_ROLE_PROGRESS_BAR: return "progress_bar";
+    case NK_A11Y_ROLE_SPIN_BUTTON: return "spin_button";
+    case NK_A11Y_ROLE_LABEL: return "label";
+    case NK_A11Y_ROLE_LINK: return "link";
+    default: return "none";
+    }
+}
+
+NK_API const char*
+nk_a11y_state_name(nk_flags state)
+{
+    static char buf[160];
+    int pos = 0;
+    #define A11Y_STATE(f, s) if (state & (f)) { \
+        int slen = a11y_strlen(s); \
+        if (pos && pos + 1 < (int)sizeof(buf)) buf[pos++] = '|'; \
+        if (pos + slen < (int)sizeof(buf)) { NK_MEMCPY(buf + pos, s, (nk_size)slen); pos += slen; } }
+    A11Y_STATE(NK_A11Y_STATE_DISABLED, "disabled")
+    A11Y_STATE(NK_A11Y_STATE_FOCUSED, "focused")
+    A11Y_STATE(NK_A11Y_STATE_CHECKED, "checked")
+    A11Y_STATE(NK_A11Y_STATE_EXPANDED, "expanded")
+    A11Y_STATE(NK_A11Y_STATE_COLLAPSED, "collapsed")
+    A11Y_STATE(NK_A11Y_STATE_MODAL, "modal")
+    A11Y_STATE(NK_A11Y_STATE_CLIPPED, "clipped")
+    A11Y_STATE(NK_A11Y_STATE_FOCUSABLE, "focusable")
+    A11Y_STATE(NK_A11Y_STATE_MULTILINE, "multiline")
+    #undef A11Y_STATE
+    if (pos >= (int)sizeof(buf)) pos = (int)sizeof(buf) - 1;
+    buf[pos] = 0;
+    return buf;
+}
+
+/* ----------------------------------------------------------------
+ * JSON serialisation (bounded, no heap allocation, fully escaped)
+ * ---------------------------------------------------------------- */
+struct a11y_json_writer {
+    char *buf;
+    int cap;
+    int len;      /* bytes that would be written excluding NUL */
+    nk_bool ok;   /* nk_false once the buffer overflows */
+};
+
+static void
+jw_init(struct a11y_json_writer *w, char *buf, int cap)
+{
+    w->buf = buf;
+    w->cap = cap;
+    w->len = 0;
+    w->ok = nk_true;
+}
+
+static void
+jw_put(struct a11y_json_writer *w, char c)
+{
+    if (w->len + 1 < w->cap)
+        w->buf[w->len] = c;
+    else
+        w->ok = nk_false;
+    w->len++;
+}
+
+static void
+jw_raw(struct a11y_json_writer *w, const char *s)
+{
+    while (*s) jw_put(w, *s++);
+}
+
+/* bounded integer formatter, avoids a varargs/stdio dependency */
+static void
+jw_uint(struct a11y_json_writer *w, unsigned int v)
+{
+    char tmp[16];
+    int n = 0;
+    if (v == 0) { jw_put(w, '0'); return; }
+    while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    while (n) jw_put(w, tmp[--n]);
+}
+
+static void
+jw_int(struct a11y_json_writer *w, int v)
+{
+    if (v < 0) {
+        jw_put(w, '-');
+        if (v == -2147483647 - 1) { jw_raw(w, "2147483648"); return; }
+        v = -v;
+    }
+    jw_uint(w, (unsigned int)v);
+}
+
+/* one decimal place; bounds are layout integers in practice */
+static void
+jw_float1(struct a11y_json_writer *w, float fv)
+{
+    int whole, tenth;
+    if (fv < 0) { jw_put(w, '-'); fv = -fv; }
+    whole = (int)fv;
+    tenth = (int)((fv - (float)whole) * 10.0f + 0.5f);
+    if (tenth >= 10) { whole++; tenth -= 10; }
+    jw_int(w, whole);
+    jw_put(w, '.');
+    jw_put(w, (char)('0' + tenth));
+}
+
+/* JSON string escape with \u00XX encoding for control characters. */
+static void
+jw_string(struct a11y_json_writer *w, const char *s)
+{
+    const unsigned char *p = (const unsigned char*)(s ? s : "");
+    jw_put(w, '"');
+    while (*p) {
+        unsigned char c = *p++;
+        switch (c) {
+        case '"': jw_raw(w, "\\\""); break;
+        case '\\': jw_raw(w, "\\\\"); break;
+        case '\b': jw_raw(w, "\\b"); break;
+        case '\f': jw_raw(w, "\\f"); break;
+        case '\n': jw_raw(w, "\\n"); break;
+        case '\r': jw_raw(w, "\\r"); break;
+        case '\t': jw_raw(w, "\\t"); break;
+        default:
+            if (c < 0x20) {
+                static const char hexd[] = "0123456789abcdef";
+                jw_raw(w, "\\u00");
+                jw_put(w, hexd[(c >> 4) & 0xF]);
+                jw_put(w, hexd[c & 0xF]);
+            } else jw_put(w, (char)c);
+            break;
+        }
+    }
+    jw_put(w, '"');
+}
+
+static void
+jw_node(struct a11y_json_writer *w, const struct nk_a11y_runtime *a,
+    const struct nk_a11y_node *n, int depth)
+{
+    int i;
+    for (i = 0; i < depth; ++i) jw_raw(w, "  ");
+    jw_raw(w, "{\"id\":");
+    jw_uint(w, n->id);
+    jw_raw(w, ",\"role\":");
+    jw_string(w, nk_a11y_role_name(n->role));
+    jw_raw(w, ",\"name\":");
+    jw_string(w, n->name);
+    jw_raw(w, ",\"value\":");
+    if (n->value) jw_string(w, n->value); else jw_raw(w, "null");
+    jw_raw(w, ",\"state\":");
+    jw_uint(w, n->state);
+    jw_raw(w, ",\"state_name\":");
+    jw_string(w, nk_a11y_state_name(n->state));
+    jw_raw(w, ",\"bounds\":[");
+    jw_float1(w, n->bounds.x); jw_put(w, ',');
+    jw_float1(w, n->bounds.y); jw_put(w, ',');
+    jw_float1(w, n->bounds.w); jw_put(w, ',');
+    jw_float1(w, n->bounds.h);
+    jw_raw(w, "],\"parent\":");
+    jw_int(w, n->parent);
+    jw_raw(w, ",\"focus_order\":");
+    jw_int(w, n->focus_order);
+    if (n->first_child >= 0) {
+        const struct nk_a11y_node *child = a->flat[n->first_child];
+        jw_raw(w, ",\"children\":[");
+        jw_put(w, '\n');
+        while (child) {
+            jw_node(w, a, child, depth + 1);
+            if (child->next_sibling >= 0) jw_raw(w, ",");
+            jw_put(w, '\n');
+            child = child->next_sibling >= 0 ?
+                a->flat[child->next_sibling] : 0;
+        }
+        for (i = 0; i < depth; ++i) jw_raw(w, "  ");
+        jw_raw(w, "]}");
+    } else {
+        jw_raw(w, ",\"children\":[]}");
+    }
+}
+
+NK_API int
+nk_a11y_snapshot_dump_json(const struct nk_context *ctx,
+    char *buffer, int capacity)
+{
+    struct a11y_json_writer w;
+    const struct nk_a11y_node *root;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled || capacity <= 0)
+        return -1;
+    jw_init(&w, buffer, capacity);
+    root = ctx->a11y->flat[0];
+    jw_raw(&w, "{\n  \"frame\":");
+    jw_uint(&w, ctx->a11y->frame);
+    jw_raw(&w, ",\n  \"node_count\":");
+    jw_int(&w, ctx->a11y->flat_count);
+    jw_raw(&w, ",\n  \"focused_id\":");
+    jw_uint(&w, ctx->a11y->focused_id);
+    jw_raw(&w, ",\n  \"tree\":\n");
+    jw_node(&w, ctx->a11y, root, 1);
+    jw_raw(&w, "\n}\n");
+    if (w.ok && w.len < w.cap) {
+        buffer[w.len] = 0;
+        return w.len;
+    }
+    return w.len; /* caller retries with a buffer of len+1 */
+}
+
+/* ----------------------------------------------------------------
+ * Focus management
+ * ---------------------------------------------------------------- */
+static nk_bool
+a11y_is_focusable(const struct nk_a11y_node *n)
+{
+    if (!n) return nk_false;
+    if (n->role == NK_A11Y_ROLE_NONE) return nk_false;
+    if (n->state & NK_A11Y_STATE_DISABLED) return nk_false;
+    if (n->focus_order < 0) return nk_false;
+    return nk_true;
+}
+
+/* When a modal popup is open only its subtree may receive focus. */
+static nk_bool
+a11y_in_modal(struct nk_a11y_runtime *a, const struct nk_a11y_node *n)
+{
+    const struct nk_a11y_node *cur = n;
+    int guard = 0;
+    if (a->modal_node < 0) return nk_true;
+    while (cur && guard++ < a->flat_count + 1) {
+        if (a11y_index_of(a, cur) == a->modal_node) return nk_true;
+        if (cur->parent < 0) return nk_false;
+        cur = a11y_node_at(a, cur->parent);
+    }
+    return nk_false;
+}
+
+static struct nk_a11y_node*
+a11y_focusable_at_order(struct nk_a11y_runtime *a, int order)
+{
+    int i;
+    for (i = 0; i < a->flat_count; ++i) {
+        struct nk_a11y_node *n = a->flat[i];
+        if (n->focus_order == order && a11y_in_modal(a, n))
+            return n;
+    }
+    return 0;
+}
+
+static void
+a11y_clear_focus_flags(struct nk_a11y_runtime *a)
+{
+    int i;
+    for (i = 0; i < a->flat_count; ++i)
+        a->flat[i]->state &= ~(nk_flags)NK_A11Y_STATE_FOCUSED;
+}
+
+static nk_bool
+a11y_apply_focus(struct nk_a11y_runtime *a, struct nk_a11y_node *n)
+{
+    if (!n || !a11y_is_focusable(n) || !a11y_in_modal(a, n))
+        return nk_false;
+    a11y_clear_focus_flags(a);
+    n->state |= NK_A11Y_STATE_FOCUSED;
+    a->focused_id = n->id;
+    a->focused_index = a11y_index_of(a, n);
+    return nk_true;
+}
+
+NK_API nk_bool
+nk_a11y_set_focus(struct nk_context *ctx, nk_uint id)
+{
+    struct nk_a11y_node *n;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    n = a11y_find(ctx->a11y, id);
+    return a11y_apply_focus(ctx->a11y, n);
+}
+
+NK_API nk_bool
+nk_a11y_focus_clear(struct nk_context *ctx)
+{
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    a11y_clear_focus_flags(ctx->a11y);
+    ctx->a11y->focused_id = 0;
+    ctx->a11y->focused_index = -1;
+    return nk_true;
+}
+
+NK_API nk_uint
+nk_a11y_focused_id(const struct nk_context *ctx)
+{
+    if (!ctx || !ctx->a11y) return 0;
+    return ctx->a11y->focused_id;
+}
+
+NK_API nk_bool
+nk_a11y_focus_first(struct nk_context *ctx)
+{
+    struct nk_a11y_node *n;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    n = a11y_focusable_at_order(ctx->a11y, 0);
+    return a11y_apply_focus(ctx->a11y, n);
+}
+
+NK_API nk_bool
+nk_a11y_focus_last(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    int order;
+    struct nk_a11y_node *n = 0;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    a = ctx->a11y;
+    for (order = 0; order < a->focus_counter; ++order) {
+        struct nk_a11y_node *cand = a11y_focusable_at_order(a, order);
+        if (cand) n = cand;
+    }
+    return a11y_apply_focus(a, n);
+}
+
+NK_API nk_bool
+nk_a11y_focus_next(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    int order, start = -1;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    a = ctx->a11y;
+    if (a->focused_index >= 0) {
+        struct nk_a11y_node *cur = a11y_node_at(a, a->focused_index);
+        if (cur) start = cur->focus_order;
+    }
+    for (order = start + 1; order < a->focus_counter; ++order) {
+        struct nk_a11y_node *n = a11y_focusable_at_order(a, order);
+        if (n && a11y_apply_focus(a, n)) return nk_true;
+    }
+    return nk_a11y_focus_first(ctx); /* wrap around */
+}
+
+NK_API nk_bool
+nk_a11y_focus_prev(struct nk_context *ctx)
+{
+    struct nk_a11y_runtime *a;
+    int order, start = -1;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    a = ctx->a11y;
+    if (a->focused_index >= 0) {
+        struct nk_a11y_node *cur = a11y_node_at(a, a->focused_index);
+        if (cur) start = cur->focus_order;
+    }
+    for (order = start - 1; order >= 0; --order) {
+        struct nk_a11y_node *n = a11y_focusable_at_order(a, order);
+        if (n && a11y_apply_focus(a, n)) return nk_true;
+    }
+    return nk_a11y_focus_last(ctx);
+}
+
+/* ----------------------------------------------------------------
+ * Activation (replayed as ordinary input)
+ * ---------------------------------------------------------------- */
+NK_API nk_bool
+nk_a11y_activate(struct nk_context *ctx, nk_uint id)
+{
+    struct nk_a11y_runtime *a;
+    struct nk_a11y_node *n;
+    if (!ctx || !ctx->a11y || !ctx->a11y->enabled) return nk_false;
+    a = ctx->a11y;
+    n = a11y_find(a, id);
+    if (!n) return nk_false;
+    if (n->state & NK_A11Y_STATE_DISABLED) return nk_false;
+    if (!a11y_in_modal(a, n)) return nk_false;
+    /* queue a synthetic left click at the widget centre; the press and
+     * release are injected across the next two frames by
+     * nk_a11y_begin_frame (driven from nk_input_begin) so the regular
+     * immediate mode widget logic processes them as genuine input */
+    a->pending.x = (int)(n->bounds.x + n->bounds.w * 0.5f);
+    a->pending.y = (int)(n->bounds.y + n->bounds.h * 0.5f);
+    a->pending.valid = nk_true;
+    a->release_queued = nk_false;
+    a11y_apply_focus(a, n);
+    return nk_true;
+}
+
+NK_API void
+nk_a11y_pump_input(struct nk_context *ctx)
+{
+    /* Input is delivered from nk_a11y_begin_frame on the following
+     * nk_input_begin calls; this hook exists so applications can keep
+     * an explicit pump step and remains safe to call repeatedly. */
+    NK_UNUSED(ctx);
+}
+
+#else /* NK_INCLUDE_ACCESSIBILITY */
+
+/* Stubs keep user code compiling unchanged when the layer is disabled. */
+struct nk_a11y_runtime;
+
+NK_API nk_bool nk_a11y_enable(struct nk_context *ctx, struct nk_allocator *alloc)
+{ NK_UNUSED(ctx); NK_UNUSED(alloc); return nk_false; }
+NK_API void nk_a11y_disable(struct nk_context *ctx) { NK_UNUSED(ctx); }
+NK_API nk_bool nk_a11y_is_enabled(const struct nk_context *ctx)
+{ NK_UNUSED(ctx); return nk_false; }
+NK_API void nk_a11y_frame_reset(struct nk_context *ctx) { NK_UNUSED(ctx); }
+NK_API struct nk_a11y_snapshot nk_a11y_snapshot_get(const struct nk_context *ctx)
+{ struct nk_a11y_snapshot s; NK_MEMSET(&s, 0, sizeof(s)); s.root = 0; s.focused = -1;
+  NK_UNUSED(ctx); return s; }
+NK_API const struct nk_a11y_node *
+nk_a11y_find_by_id(const struct nk_context *ctx, nk_uint id)
+{ NK_UNUSED(ctx); NK_UNUSED(id); return 0; }
+NK_API int nk_a11y_snapshot_dump_json(const struct nk_context *ctx,
+    char *b, int c) { NK_UNUSED(ctx); NK_UNUSED(b); NK_UNUSED(c); return -1; }
+NK_API nk_bool nk_a11y_set_focus(struct nk_context *ctx, nk_uint id)
+{ NK_UNUSED(ctx); NK_UNUSED(id); return nk_false; }
+NK_API nk_bool nk_a11y_focus_next(struct nk_context *ctx) { NK_UNUSED(ctx); return nk_false; }
+NK_API nk_bool nk_a11y_focus_prev(struct nk_context *ctx) { NK_UNUSED(ctx); return nk_false; }
+NK_API nk_bool nk_a11y_focus_first(struct nk_context *ctx) { NK_UNUSED(ctx); return nk_false; }
+NK_API nk_bool nk_a11y_focus_last(struct nk_context *ctx) { NK_UNUSED(ctx); return nk_false; }
+NK_API nk_bool nk_a11y_focus_clear(struct nk_context *ctx) { NK_UNUSED(ctx); return nk_false; }
+NK_API nk_uint nk_a11y_focused_id(const struct nk_context *ctx)
+{ NK_UNUSED(ctx); return 0; }
+NK_API nk_bool nk_a11y_activate(struct nk_context *ctx, nk_uint id)
+{ NK_UNUSED(ctx); NK_UNUSED(id); return nk_false; }
+NK_API void nk_a11y_pump_input(struct nk_context *ctx) { NK_UNUSED(ctx); }
+NK_API const char *nk_a11y_role_name(enum nk_a11y_role role)
+{ NK_UNUSED(role); return "none"; }
+NK_API const char *nk_a11y_state_name(nk_flags state)
+{ NK_UNUSED(state); return ""; }
+
+#endif /* NK_INCLUDE_ACCESSIBILITY */
 
 #endif /* NK_IMPLEMENTATION */
 /*

@@ -93,6 +93,10 @@ nk_contextual_item_text(struct nk_context *ctx, const char *text, int len,
     if (!state) return nk_false;
 
     in = (state == NK_WIDGET_ROM || win->layout->flags & NK_WINDOW_ROM) ? 0 : &ctx->input;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_emit(ctx, NK_A11Y_ROLE_MENU_ITEM, text, len, 0, 0, bounds,
+        state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+#endif
     if (nk_do_button_text(&ctx->last_widget_state, &win->buffer, bounds,
         text, len, alignment, NK_BUTTON_DEFAULT, &style->contextual_button, in, style->font)) {
         nk_contextual_close(ctx);

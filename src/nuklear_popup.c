@@ -84,6 +84,12 @@ nk_popup_begin(struct nk_context *ctx, enum nk_popup_type type,
         popup->layout->offset_x = &popup->scrollbar.x;
         popup->layout->offset_y = &popup->scrollbar.y;
         popup->layout->parent = win->layout;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+        nk_a11y_scope_push(ctx, NK_A11Y_ROLE_MENU, title, title_len,
+            popup->bounds, NK_A11Y_STATE_EXPANDED);
+        /* blocking popups are application modal */
+        nk_a11y_note_popup(ctx, nk_true, nk_true);
+#endif
         return 1;
     } else {
         /* popup was closed/is invalid so cleanup */
@@ -184,6 +190,22 @@ nk_nonblock_begin(struct nk_context *ctx,
         root->flags |= NK_WINDOW_ROM;
         root = root->parent;
     }}
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        enum nk_a11y_role arole =
+            (panel_type == NK_PANEL_MENU || panel_type == NK_PANEL_CONTEXTUAL) ?
+            NK_A11Y_ROLE_MENU : NK_A11Y_ROLE_PANE;
+        /* The combo header already carries the COMBO_BOX role, so the
+         * combo popup itself is recorded as a neutral container holding
+         * the list items rather than as a second combo box. */
+        nk_a11y_scope_push(ctx, arole,
+            arole == NK_A11Y_ROLE_MENU ? win->name_string : "",
+            arole == NK_A11Y_ROLE_MENU ? (int)nk_strlen(win->name_string) : 0,
+            popup->bounds, NK_A11Y_STATE_EXPANDED);
+        /* non-blocking popups still capture all input while open */
+        nk_a11y_note_popup(ctx, nk_true, nk_true);
+    }
+#endif
     return is_active;
 }
 NK_API void
@@ -213,6 +235,10 @@ nk_popup_end(struct nk_context *ctx)
     popup = ctx->current;
     if (!popup->parent) return;
     win = popup->parent;
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    nk_a11y_note_popup(ctx, nk_true, nk_false);
+    nk_a11y_scope_pop(ctx);
+#endif
     if (popup->flags & NK_WINDOW_HIDDEN) {
         struct nk_panel *root;
         root = win->layout;

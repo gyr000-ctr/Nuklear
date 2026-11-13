@@ -232,6 +232,15 @@ nk_slider_float(struct nk_context *ctx, float min_value, float *value, float max
     old_value = *value;
     *value = nk_do_slider(&ctx->last_widget_state, &win->buffer, bounds, min_value,
                 old_value, max_value, value_step, &style->slider, in, style->font);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        char vbuf[NK_MAX_NUMBER_BUFFER]; int vlen;
+        nk_itoa(vbuf, (int)(*value));
+        vlen = (int)nk_strlen(vbuf);
+        nk_a11y_emit(ctx, NK_A11Y_ROLE_SLIDER, "slider", 6, vbuf, vlen,
+            bounds, state == NK_WIDGET_DISABLED ? NK_A11Y_STATE_DISABLED : 0);
+    }
+#endif
     return (old_value > *value || old_value < *value);
 }
 NK_API float

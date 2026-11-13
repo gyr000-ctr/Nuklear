@@ -29,6 +29,11 @@ extern "C" {
 #ifndef NK_SCROLLBAR_HIDING_TIMEOUT
   #define NK_SCROLLBAR_HIDING_TIMEOUT 4.0f
 #endif
+/* Accessibility semantic layer is included unless explicitly disabled
+ * with -DNK_INCLUDE_ACCESSIBILITY=0 / -DNK_INCLUDE_ACCESSIBILITY=n. */
+#if !defined(NK_INCLUDE_ACCESSIBILITY)
+  #define NK_INCLUDE_ACCESSIBILITY 1
+#endif
 /*
  * ==============================================================
  *
@@ -5794,6 +5799,188 @@ struct nk_pool {
     nk_size cap;
 };
 
+/*
+ * ==============================================================
+ *
+ *                          ACCESSIBILITY
+ *
+ * ===============================================================
+ * Optional semantic layer on top of the immediate mode widget API.
+ *
+ * Nuklear widgets only emit draw commands; they carry no role, name,
+ * value, state or focus information for screen readers or UI automation.
+ * When accessibility support is compiled in (NK_INCLUDE_ACCESSIBILITY,
+ * enabled by default) each instrumented widget additionally records a
+ * semantic node into a per-context tree that is rebuilt every frame.
+ *
+ * The layer is opt-in at runtime: nothing is recorded until
+ * nk_a11y_enable() is called and recording is zero-cost when disabled
+ * (a single branch on a flag). Rendering and input behaviour are never
+ * modified by the layer itself; the only runtime effect it can have is
+ * when the application explicitly requests an action such as setting
+ * focus or activating a node, which is delivered as synthetic input
+ * events through the regular nk_input_* path.
+ *
+ * Memory: nodes and label/value strings live in paged arenas owned by
+ * the context. At the start of each frame all arenas are reset in O(1)
+ * and their already allocated blocks are reused, so once the working
+ * set has grown to fit a frame no per-frame heap allocations happen and
+ * there is no per-widget temporary allocation.
+ */
+#ifndef NK_A11Y_NAME_MAX
+  #define NK_A11Y_NAME_MAX 128   /* longest recorded name/value, in bytes (truncated) */
+#endif
+#ifndef NK_A11Y_SCOPE_DEPTH
+  #define NK_A11Y_SCOPE_DEPTH 32 /* nested windows/groups/popups supported */
+#endif
+#ifndef NK_A11Y_NODE_PAGE
+  #define NK_A11Y_NODE_PAGE 256  /* nodes allocated per arena block */
+#endif
+#ifndef NK_A11Y_TEXT_PAGE
+  #define NK_A11Y_TEXT_PAGE 2048 /* string bytes allocated per arena block */
+#endif
+
+/** Semantic role of a node. Mirrors common platform accessibility roles. */
+enum nk_a11y_role {
+    NK_A11Y_ROLE_NONE = 0,
+    NK_A11Y_ROLE_WINDOW,       /**< top level or nested window */
+    NK_A11Y_ROLE_GROUP,        /**< named container: group, list view, tree body */
+    NK_A11Y_ROLE_PANE,         /**< unnamed structural container */
+    NK_A11Y_ROLE_BUTTON,
+    NK_A11Y_ROLE_TOGGLE_BUTTON,/**< check box / checkable button */
+    NK_A11Y_ROLE_RADIO_BUTTON,
+    NK_A11Y_ROLE_TEXT_INPUT,   /**< single or multi line edit */
+    NK_A11Y_ROLE_COMBO_BOX,
+    NK_A11Y_ROLE_LIST,
+    NK_A11Y_ROLE_LIST_ITEM,    /**< selectable row inside a list/combo/menu */
+    NK_A11Y_ROLE_MENU,
+    NK_A11Y_ROLE_MENU_ITEM,
+    NK_A11Y_ROLE_TREE_ITEM,    /**< collapsible tree header */
+    NK_A11Y_ROLE_SLIDER,
+    NK_A11Y_ROLE_PROGRESS_BAR,
+    NK_A11Y_ROLE_SPIN_BUTTON,  /**< numeric property */
+    NK_A11Y_ROLE_LABEL,        /**< static, non interactive text */
+    NK_A11Y_ROLE_LINK,
+    NK_A11Y_ROLE_COUNT
+};
+
+/** Bit flags describing the state of a node. */
+enum nk_a11y_state_flags {
+    NK_A11Y_STATE_DISABLED = NK_FLAG(0), /**< widget exists but cannot be operated */
+    NK_A11Y_STATE_FOCUSED  = NK_FLAG(1), /**< currently holds accessibility/keyboard focus */
+    NK_A11Y_STATE_CHECKED  = NK_FLAG(2), /**< toggle/radio/selectable is on */
+    NK_A11Y_STATE_EXPANDED = NK_FLAG(3), /**< tree/popup/combo is open */
+    NK_A11Y_STATE_COLLAPSED= NK_FLAG(4), /**< tree/popup/combo is closed */
+    NK_A11Y_STATE_MODAL    = NK_FLAG(5), /**< blocks interaction outside its subtree */
+    NK_A11Y_STATE_CLIPPED  = NK_FLAG(6), /**< partially or fully scrolled out of view */
+    NK_A11Y_STATE_FOCUSABLE= NK_FLAG(7), /**< reachable with focus next/previous */
+    NK_A11Y_STATE_MULTILINE= NK_FLAG(8)  /**< text input accepts multiple lines */
+};
+
+/**
+ * One semantic node. Strings are owned by the context accessibility
+ * arenas and stay valid until the next frame reset (nk_input_begin or
+ * nk_a11y_frame_reset). Node indices are stable for the lifetime of the
+ * current snapshot; node ids are stable across frames for the same
+ * semantic position even when nodes are added or removed elsewhere.
+ */
+struct nk_a11y_node {
+    nk_uint id;                 /**< stable, content derived identifier */
+    enum nk_a11y_role role;     /**< semantic role */
+    nk_flags state;             /**< combination of nk_a11y_state_flags */
+    struct nk_rect bounds;      /**< screen space rectangle */
+    int parent;                 /**< node index, -1 for the virtual root */
+    int first_child;            /**< node index, -1 when leaf */
+    int last_child;
+    int next_sibling;           /**< node index, -1 at end */
+    int prev_sibling;
+    int focus_order;            /**< zero based tab order, -1 when not focusable */
+    const char *name;           /**< accessible name, never NULL (may be "") */
+    const char *value;          /**< accessible value, NULL when the role has none */
+};
+
+/** Read only snapshot of the semantic tree recorded during a frame. */
+struct nk_a11y_snapshot {
+    const struct nk_a11y_node *const *nodes; /**< flat array, index 0 is the virtual root */
+    int count;                        /**< number of entries in nodes */
+    int root;                         /**< index of the virtual root (always 0) */
+    int focused;                      /**< index of the focused node, -1 when none */
+    unsigned int frame;               /**< context frame sequence the snapshot was built in */
+};
+
+/** Returns a non NULL static, NUL terminated name for a role. */
+NK_API const char *nk_a11y_role_name(enum nk_a11y_role role);
+
+/** Turns state flags into a deterministic "flag|flag" string (thread unsafe static buffer). */
+NK_API const char *nk_a11y_state_name(nk_flags state);
+
+/**
+ * Enables accessibility recording using the given allocator. Safe to
+ * call repeatedly; re-enabling after nk_a11y_disable() reuses existing
+ * arenas. Returns nk_false only when the allocator is NULL or an arena
+ * block could not be allocated.
+ */
+NK_API nk_bool nk_a11y_enable(struct nk_context *ctx, struct nk_allocator *alloc);
+
+/** Disables recording and frees every accessibility arena block. */
+NK_API void nk_a11y_disable(struct nk_context *ctx);
+
+/** Returns whether accessibility recording is currently enabled. */
+NK_API nk_bool nk_a11y_is_enabled(const struct nk_context *ctx);
+
+/**
+ * Starts a new recording pass. Called automatically by nk_input_begin()
+ * but exposed for harnesses that drive frames without nk_input_begin().
+ */
+NK_API void nk_a11y_frame_reset(struct nk_context *ctx);
+
+/** Returns the snapshot of the most recently recorded frame. */
+NK_API struct nk_a11y_snapshot nk_a11y_snapshot_get(const struct nk_context *ctx);
+
+/** Looks a node up by its stable id; returns NULL when not present. */
+NK_API const struct nk_a11y_node *
+nk_a11y_find_by_id(const struct nk_context *ctx, nk_uint id);
+
+/**
+ * Serialises the snapshot as deterministic, escaped JSON into the
+ * caller provided buffer. Returns the number of bytes (excluding the
+ * terminating NUL) the full document needs; if that is smaller than
+ * capacity the document is NUL terminated, otherwise nothing is
+ * written. No heap memory is allocated.
+ */
+NK_API int nk_a11y_snapshot_dump_json(const struct nk_context *ctx,
+    char *buffer, int capacity);
+
+/**
+ * Moves accessibility focus. Focus never lands on invisible, clipped
+ * away, disabled or non focusable nodes; when a modal popup is open
+ * navigation is restricted to its subtree.
+ */
+NK_API nk_bool nk_a11y_set_focus(struct nk_context *ctx, nk_uint id);
+NK_API nk_bool nk_a11y_focus_next(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_prev(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_first(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_last(struct nk_context *ctx);
+NK_API nk_bool nk_a11y_focus_clear(struct nk_context *ctx);
+/** Stable id of the currently focused node, 0 when nothing is focused. */
+NK_API nk_uint nk_a11y_focused_id(const struct nk_context *ctx);
+
+/**
+ * Requests the default action of a node (button press, toggle, list
+ * selection, edit focus, ...). The request is queued and replayed as
+ * ordinary mouse input: the synthetic press is injected on the next
+ * nk_input_begin() and its matching release on the nk_input_begin()
+ * after that, so the regular widget logic handles it unchanged.
+ */
+NK_API nk_bool nk_a11y_activate(struct nk_context *ctx, nk_uint id);
+
+/**
+ * Kept as an explicit pump step for applications that want one; input
+ * delivery is actually driven from nk_input_begin(), so this is a safe
+ * no-op and may be called any number of times.
+ */
+NK_API void nk_a11y_pump_input(struct nk_context *ctx);
+
 struct nk_context {
 /* public: can be accessed freely */
     struct nk_input input;
@@ -5833,6 +6020,11 @@ struct nk_context {
     struct nk_page_element *freelist;
     unsigned int count;
     unsigned int seq;
+
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    /* private accessibility runtime; see nk_a11y_* documentation */
+    struct nk_a11y_runtime *a11y;
+#endif
 };
 
 /* ==============================================================

@@ -811,6 +811,20 @@ nk_edit_buffer(struct nk_context *ctx, nk_flags flags,
     in = (flags & NK_EDIT_READ_ONLY) ? 0: in;
     ret_flags = nk_do_edit(&ctx->last_widget_state, &win->buffer, bounds, flags,
                     filter, edit, &style->edit, in, style->font);
+#ifdef NK_INCLUDE_ACCESSIBILITY
+    {
+        nk_flags astate = (state == NK_WIDGET_DISABLED) ?
+            NK_A11Y_STATE_DISABLED : 0;
+        int aindex;
+        if (flags & NK_EDIT_MULTILINE)
+            astate |= NK_A11Y_STATE_MULTILINE;
+        aindex = nk_a11y_emit(ctx, NK_A11Y_ROLE_TEXT_INPUT, "edit", 4,
+            nk_str_get_const(&edit->string),
+            nk_str_len_char(&edit->string), bounds, astate);
+        if (edit->active && aindex >= 0)
+            nk_a11y_note_edit_focus(ctx, aindex);
+    }
+#endif
 
     if (ctx->last_widget_state & NK_WIDGET_STATE_HOVER)
         ctx->style.cursor_active = ctx->style.cursors[NK_CURSOR_TEXT];
